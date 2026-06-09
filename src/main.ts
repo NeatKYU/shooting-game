@@ -27,6 +27,8 @@ interface StageEnemyEvent {
 
 interface PlayerBullet {
   body: Phaser.GameObjects.Rectangle
+  vx: number
+  vy: number
   debug?: Phaser.GameObjects.Rectangle
 }
 
@@ -269,6 +271,7 @@ class ShooterScene extends Phaser.Scene {
   private boss?: Boss
   private score = 0
   private lives = MAX_LIVES
+  private weaponLevel = 1
   private nextStageEventIndex = 0
   private stageStartedAt = 0
   private invulnerableUntil = 0
@@ -345,6 +348,7 @@ class ShooterScene extends Phaser.Scene {
     this.boss = undefined
     this.score = 0
     this.lives = MAX_LIVES
+    this.weaponLevel = 1
     this.nextStageEventIndex = 0
     this.stageStartedAt = 0
     this.invulnerableUntil = 0
@@ -433,10 +437,33 @@ class ShooterScene extends Phaser.Scene {
   }
 
   private fireBullet() {
-    const body = this.add.rectangle(this.player.x, this.player.y - 42, 7, 24, 0xfacc15)
+    if (this.weaponLevel === 1) {
+      this.createPlayerBullet(this.player.x, this.player.y - 42, -Math.PI / 2)
+      return
+    }
+
+    if (this.weaponLevel === 2) {
+      this.createPlayerBullet(this.player.x - 10, this.player.y - 42, -Math.PI / 2)
+      this.createPlayerBullet(this.player.x + 10, this.player.y - 42, -Math.PI / 2)
+      return
+    }
+
+    this.createPlayerBullet(this.player.x - 9, this.player.y - 42, -Math.PI / 2 - 0.24)
+    this.createPlayerBullet(this.player.x, this.player.y - 46, -Math.PI / 2)
+    this.createPlayerBullet(this.player.x + 9, this.player.y - 42, -Math.PI / 2 + 0.24)
+  }
+
+  private createPlayerBullet(x: number, y: number, angle: number) {
+    const body = this.add.rectangle(x, y, 7, 24, 0xfacc15)
     body.setStrokeStyle(1, 0xfef08a)
+    body.setRotation(angle + Math.PI / 2)
     const debug = this.createDebugRect(body.x, body.y, 7, 24, 0x22d3ee)
-    this.bullets.push({ body, debug })
+    this.bullets.push({
+      body,
+      vx: Math.cos(angle) * PLAYER_BULLET_SPEED,
+      vy: Math.sin(angle) * PLAYER_BULLET_SPEED,
+      debug,
+    })
   }
 
   private spawnStageEnemies(elapsedMs: number) {
@@ -496,10 +523,16 @@ class ShooterScene extends Phaser.Scene {
 
   private updateBullets(dt: number) {
     this.bullets = this.bullets.filter((bullet) => {
-      bullet.body.y -= PLAYER_BULLET_SPEED * dt
+      bullet.body.x += bullet.vx * dt
+      bullet.body.y += bullet.vy * dt
       this.syncDebugRect(bullet.debug, bullet.body)
 
-      if (bullet.body.y < -30) {
+      if (
+        bullet.body.x < -40 ||
+        bullet.body.x > GAME_WIDTH + 40 ||
+        bullet.body.y < -40 ||
+        bullet.body.y > GAME_HEIGHT + 40
+      ) {
         this.destroyPlayerBullet(bullet)
         return false
       }
