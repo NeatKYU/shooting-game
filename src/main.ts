@@ -266,21 +266,28 @@ class ShooterScene extends Phaser.Scene {
   }
 
   private updatePlayer(dt: number) {
-    let direction = 0
+    let dx = 0
+    let dy = 0
 
     if (this.cursors.left.isDown) {
-      direction -= 1
+      dx -= 1
     }
 
     if (this.cursors.right.isDown) {
-      direction += 1
+      dx += 1
     }
 
-    this.player.x = Phaser.Math.Clamp(
-      this.player.x + direction * PLAYER_SPEED * dt,
-      34,
-      GAME_WIDTH - 34,
-    )
+    if (this.cursors.up.isDown) {
+      dy -= 1
+    }
+
+    if (this.cursors.down.isDown) {
+      dy += 1
+    }
+
+    const length = Math.hypot(dx, dy) || 1
+    this.player.x = Phaser.Math.Clamp(this.player.x + (dx / length) * PLAYER_SPEED * dt, 30, GAME_WIDTH - 30)
+    this.player.y = Phaser.Math.Clamp(this.player.y + (dy / length) * PLAYER_SPEED * dt, 110, GAME_HEIGHT - 34)
   }
 
   private fireBullet() {
