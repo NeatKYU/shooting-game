@@ -8,8 +8,11 @@ const PLAYER_BULLET_SPEED = 700
 const PLAYER_FIRE_MS = 150
 const MAX_LIVES = 3
 const MAX_WEAPON_LEVEL = 3
-const POWER_UP_SPEED = 135
+const POWER_UP_SPEED = 92
+const POWER_UP_DRIFT_SPEED = 88
 const POWER_UP_DROP_CHANCE = 0.1
+const POWER_UP_LIFETIME_MS = 8_000
+const POWER_UP_TURN_MS = 780
 const PLAYER_HIT_INVULNERABLE_MS = 900
 const BOSS_APPEAR_MS = 90_000
 const BOSS_MAX_HP = 180
@@ -40,6 +43,9 @@ interface PlayerBullet {
 interface PowerUp {
   body: PhysicsRectangle
   glow: Phaser.GameObjects.Ellipse
+  spawnedAt: number
+  nextTurnAt: number
+  driftDirection: -1 | 1
   debug?: Phaser.GameObjects.Rectangle
 }
 
@@ -576,12 +582,13 @@ class ShooterScene extends Phaser.Scene {
   }
 
   private spawnPowerUp(x: number, y: number) {
-    const glow = this.add.ellipse(x, y, 34, 34, 0x38bdf8, 0.18)
-    const body = this.enableRectanglePhysics(this.add.rectangle(x, y, 22, 22, 0xfacc15, 0.95), this.powerUpsGroup, 28, 28)
+    const glow = this.add.ellipse(x, y, 18, 18, 0x38bdf8, 0.18)
+    const body = this.enableRectanglePhysics(this.add.rectangle(x, y, 11, 11, 0xfacc15, 0.95), this.powerUpsGroup, 14, 14)
     body.setAngle(45)
     body.setStrokeStyle(2, 0xfef08a, 0.95)
-    body.body.setVelocity(0, POWER_UP_SPEED)
-    const debug = this.createDebugRect(body.x, body.y, 28, 28, 0xfef08a)
+    const driftDirection = Math.random() < 0.5 ? -1 : 1
+    body.body.setVelocity(driftDirection * POWER_UP_DRIFT_SPEED, POWER_UP_SPEED)
+    const debug = this.createDebugRect(body.x, body.y, 14, 14, 0xfef08a)
 
     this.tweens.add({
       targets: [body, glow],
@@ -592,7 +599,14 @@ class ShooterScene extends Phaser.Scene {
       yoyo: true,
     })
 
-    this.powerUps.push({ body, glow, debug })
+    this.powerUps.push({
+      body,
+      glow,
+      spawnedAt: this.time.now,
+      nextTurnAt: this.time.now + POWER_UP_TURN_MS,
+      driftDirection,
+      debug,
+    })
   }
 
   private spawnEnemy(event: StageEnemyEvent, elapsedMs: number) {
@@ -673,10 +687,23 @@ class ShooterScene extends Phaser.Scene {
 
   private updatePowerUps(dt: number) {
     this.powerUps = this.powerUps.filter((powerUp) => {
+      const ageMs = this.time.now - powerUp.spawnedAt
+      const shouldTurnByTime = this.time.now >= powerUp.nextTurnAt
+      const shouldTurnByBounds =
+        (powerUp.body.x <= 18 && powerUp.driftDirection < 0) ||
+        (powerUp.body.x >= GAME_WIDTH - 18 && powerUp.driftDirection > 0)
+
+      if (shouldTurnByTime || shouldTurnByBounds) {
+        powerUp.driftDirection = powerUp.driftDirection === 1 ? -1 : 1
+        powerUp.nextTurnAt = this.time.now + POWER_UP_TURN_MS
+        powerUp.body.body.setVelocity(powerUp.driftDirection * POWER_UP_DRIFT_SPEED, POWER_UP_SPEED)
+      }
+
       powerUp.glow.y = powerUp.body.y
+      powerUp.glow.x = powerUp.body.x
       this.syncDebugRect(powerUp.debug, powerUp.body)
 
-      if (powerUp.body.y > GAME_HEIGHT + 40) {
+      if (ageMs >= POWER_UP_LIFETIME_MS || powerUp.body.y > GAME_HEIGHT + 40) {
         this.destroyPowerUp(powerUp)
         return false
       }
