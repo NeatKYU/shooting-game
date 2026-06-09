@@ -7,6 +7,9 @@ const PLAYER_SPEED = 360
 const PLAYER_BULLET_SPEED = 700
 const PLAYER_FIRE_MS = 150
 const MAX_LIVES = 3
+const MAX_WEAPON_LEVEL = 3
+const POWER_UP_SPEED = 135
+const POWER_UP_DROP_CHANCE = 0.3
 const PLAYER_HIT_INVULNERABLE_MS = 900
 const BOSS_APPEAR_MS = 90_000
 const BOSS_MAX_HP = 180
@@ -29,6 +32,12 @@ interface PlayerBullet {
   body: Phaser.GameObjects.Rectangle
   vx: number
   vy: number
+  debug?: Phaser.GameObjects.Rectangle
+}
+
+interface PowerUp {
+  body: Phaser.GameObjects.Rectangle
+  glow: Phaser.GameObjects.Ellipse
   debug?: Phaser.GameObjects.Rectangle
 }
 
@@ -243,12 +252,17 @@ class IntroScene extends Phaser.Scene {
       fontStyle: '800',
     })
 
-    const body = this.add.text(24, 52, '방향키로 이동\nSpace 키를 누르고 있으면 발사\n적 탄막과 충돌하면 목숨을 잃습니다', {
-      color: '#e5e7eb',
-      fontFamily: UI_FONT,
-      fontSize: '16px',
-      lineSpacing: 5,
-    })
+    const body = this.add.text(
+      24,
+      52,
+      '방향키로 이동\nSpace 키를 누르고 있으면 발사\n파워 아이템을 먹으면 탄이 강화됩니다',
+      {
+        color: '#e5e7eb',
+        fontFamily: UI_FONT,
+        fontSize: '16px',
+        lineSpacing: 5,
+      },
+    )
 
     panel.add([background, title, body])
     this.helpPanel = panel
@@ -265,7 +279,9 @@ class ShooterScene extends Phaser.Scene {
   private bossBarFrame!: Phaser.GameObjects.Rectangle
   private bossBarFill!: Phaser.GameObjects.Rectangle
   private bossNameText!: Phaser.GameObjects.Text
+  private weaponText!: Phaser.GameObjects.Text
   private bullets: PlayerBullet[] = []
+  private powerUps: PowerUp[] = []
   private enemyBullets: EnemyBullet[] = []
   private enemies: Enemy[] = []
   private boss?: Boss
@@ -276,6 +292,7 @@ class ShooterScene extends Phaser.Scene {
   private stageStartedAt = 0
   private invulnerableUntil = 0
   private lastPlayerShot = -PLAYER_FIRE_MS
+  private statusMessageUntil = 0
   private isGameOver = false
   private isStageClear = false
 
@@ -314,6 +331,12 @@ class ShooterScene extends Phaser.Scene {
       fontSize: '18px',
     })
 
+    this.weaponText = this.add.text(24, 66, 'Weapon Lv.1', {
+      color: '#fde68a',
+      fontFamily: MONO_FONT,
+      fontSize: '16px',
+    })
+
     this.add
       .text(GAME_WIDTH - 126, 20, '목숨', {
         color: '#fecdd3',
@@ -342,6 +365,7 @@ class ShooterScene extends Phaser.Scene {
 
   private resetGameState() {
     this.bullets = []
+    this.powerUps = []
     this.enemyBullets = []
     this.enemies = []
     this.lifeIcons = []
@@ -353,6 +377,7 @@ class ShooterScene extends Phaser.Scene {
     this.stageStartedAt = 0
     this.invulnerableUntil = 0
     this.lastPlayerShot = -PLAYER_FIRE_MS
+    this.statusMessageUntil = 0
     this.isGameOver = false
     this.isStageClear = false
   }
@@ -382,8 +407,9 @@ class ShooterScene extends Phaser.Scene {
 
     this.spawnStageEnemies(elapsedMs)
     this.maybeSpawnBoss(elapsedMs)
-    this.updateStatus(elapsedMs)
+    this.updateStatus(time, elapsedMs)
     this.updateBullets(dt)
+    this.updatePowerUps(dt)
     this.updateEnemyBullets(time, dt)
     this.updateEnemies(elapsedMs, time, dt)
     this.updateBoss(elapsedMs)
@@ -476,6 +502,33 @@ class ShooterScene extends Phaser.Scene {
     }
   }
 
+  private maybeDropPowerUp(x: number, y: number) {
+    if (Math.random() >= POWER_UP_DROP_CHANCE) {
+      return
+    }
+
+    this.spawnPowerUp(x, y)
+  }
+
+  private spawnPowerUp(x: number, y: number) {
+    const glow = this.add.ellipse(x, y, 34, 34, 0x38bdf8, 0.18)
+    const body = this.add.rectangle(x, y, 22, 22, 0xfacc15, 0.95)
+    body.setAngle(45)
+    body.setStrokeStyle(2, 0xfef08a, 0.95)
+    const debug = this.createDebugRect(body.x, body.y, 28, 28, 0xfef08a)
+
+    this.tweens.add({
+      targets: [body, glow],
+      scale: 1.18,
+      duration: 520,
+      ease: 'Sine.easeInOut',
+      repeat: -1,
+      yoyo: true,
+    })
+
+    this.powerUps.push({ body, glow, debug })
+  }
+
   private spawnEnemy(event: StageEnemyEvent, elapsedMs: number) {
     const isAmbush = event.pattern === 'ambush-left' || event.pattern === 'ambush-right'
     const body = this.add.rectangle(event.x, -28, isAmbush ? 42 : 36, isAmbush ? 32 : 28, 0xfb7185)
@@ -534,6 +587,26 @@ class ShooterScene extends Phaser.Scene {
         bullet.body.y > GAME_HEIGHT + 40
       ) {
         this.destroyPlayerBullet(bullet)
+        return false
+      }
+
+      return true
+    })
+  }
+
+  private updatePowerUps(dt: number) {
+    this.powerUps = this.powerUps.filter((powerUp) => {
+      powerUp.body.y += POWER_UP_SPEED * dt
+      powerUp.glow.y = powerUp.body.y
+      this.syncDebugRect(powerUp.debug, powerUp.body)
+
+      if (Phaser.Geom.Intersects.RectangleToRectangle(this.getPlayerHitbox(), powerUp.body.getBounds())) {
+        this.collectPowerUp(powerUp)
+        return false
+      }
+
+      if (powerUp.body.y > GAME_HEIGHT + 40) {
+        this.destroyPowerUp(powerUp)
         return false
       }
 
@@ -700,6 +773,7 @@ class ShooterScene extends Phaser.Scene {
         hitEnemy.hp -= 1
 
         if (hitEnemy.hp <= 0) {
+          this.maybeDropPowerUp(hitEnemy.body.x, hitEnemy.body.y)
           this.destroyEnemy(hitEnemy)
           this.enemies = this.enemies.filter((item) => item !== hitEnemy)
           this.score += 10
@@ -805,6 +879,7 @@ class ShooterScene extends Phaser.Scene {
     }
 
     this.invulnerableUntil = time + PLAYER_HIT_INVULNERABLE_MS
+    this.statusMessageUntil = time + 850
     this.statusText.setText(`피격! 남은 목숨: ${this.lives}`)
     this.statusText.setColor('#fecaca')
 
@@ -835,8 +910,24 @@ class ShooterScene extends Phaser.Scene {
     })
   }
 
-  private updateStatus(elapsedMs: number) {
-    if (this.boss) {
+  private collectPowerUp(powerUp: PowerUp) {
+    this.destroyPowerUp(powerUp)
+    this.weaponLevel = Math.min(MAX_WEAPON_LEVEL, this.weaponLevel + 1)
+    this.updateWeaponDisplay()
+
+    const label = this.weaponLevel === 2 ? '2연발' : '3방향'
+    this.statusMessageUntil = this.time.now + 1_100
+    this.statusText.setText(`파워 업! ${label}`)
+    this.statusText.setColor('#fde68a')
+  }
+
+  private updateWeaponDisplay() {
+    this.weaponText.setText(`Weapon Lv.${this.weaponLevel}`)
+    this.weaponText.setColor(this.weaponLevel === MAX_WEAPON_LEVEL ? '#bbf7d0' : '#fde68a')
+  }
+
+  private updateStatus(time: number, elapsedMs: number) {
+    if (this.boss || time < this.statusMessageUntil) {
       return
     }
 
@@ -863,8 +954,10 @@ class ShooterScene extends Phaser.Scene {
     this.destroyBoss()
     this.enemyBullets.forEach((bullet) => this.destroyEnemyBullet(bullet))
     this.enemies.forEach((enemy) => this.destroyEnemy(enemy))
+    this.powerUps.forEach((powerUp) => this.destroyPowerUp(powerUp))
     this.enemyBullets = []
     this.enemies = []
+    this.powerUps = []
     this.isStageClear = true
     this.setBossUiVisible(false)
     this.statusText.setText('STAGE 1 CLEAR. Space로 다시 시작.')
@@ -879,6 +972,14 @@ class ShooterScene extends Phaser.Scene {
   private destroyEnemyBullet(bullet: EnemyBullet) {
     bullet.body.destroy()
     bullet.debug?.destroy()
+  }
+
+  private destroyPowerUp(powerUp: PowerUp) {
+    this.tweens.killTweensOf(powerUp.body)
+    this.tweens.killTweensOf(powerUp.glow)
+    powerUp.body.destroy()
+    powerUp.glow.destroy()
+    powerUp.debug?.destroy()
   }
 
   private destroyEnemy(enemy: Enemy) {
