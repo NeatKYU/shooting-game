@@ -1158,6 +1158,9 @@ const config: Phaser.Types.Core.GameConfig = {
     default: 'arcade',
     arcade: {
       debug: DEBUG_HITBOXES,
+      debugShowBody: DEBUG_HITBOXES,
+      debugShowStaticBody: DEBUG_HITBOXES,
+      debugShowVelocity: false,
       gravity: { x: 0, y: 0 },
     },
   },
