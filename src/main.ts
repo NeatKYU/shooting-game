@@ -20,6 +20,10 @@ const MONO_FONT = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monosp
 const DEBUG_HITBOXES = import.meta.env.DEV
 
 type EnemyPattern = 'formation' | 'diagonal-left' | 'diagonal-right' | 'ambush-left' | 'ambush-right'
+type ArcadeOverlapObject = Parameters<Phaser.Types.Physics.Arcade.ArcadePhysicsCallback>[0]
+type PhysicsImage = Phaser.GameObjects.Image & { body: Phaser.Physics.Arcade.Body }
+type PhysicsRectangle = Phaser.GameObjects.Rectangle & { body: Phaser.Physics.Arcade.Body }
+type PhysicsEllipse = Phaser.GameObjects.Ellipse & { body: Phaser.Physics.Arcade.Body }
 
 interface StageEnemyEvent {
   timeMs: number
@@ -29,28 +33,24 @@ interface StageEnemyEvent {
 }
 
 interface PlayerBullet {
-  body: Phaser.GameObjects.Rectangle
-  vx: number
-  vy: number
+  body: PhysicsRectangle
   debug?: Phaser.GameObjects.Rectangle
 }
 
 interface PowerUp {
-  body: Phaser.GameObjects.Rectangle
+  body: PhysicsRectangle
   glow: Phaser.GameObjects.Ellipse
   debug?: Phaser.GameObjects.Rectangle
 }
 
 interface EnemyBullet {
-  body: Phaser.GameObjects.Ellipse
-  vx: number
-  vy: number
+  body: PhysicsEllipse
   radius: number
   debug?: Phaser.GameObjects.Ellipse
 }
 
 interface Enemy {
-  body: Phaser.GameObjects.Rectangle
+  body: PhysicsRectangle
   debug?: Phaser.GameObjects.Rectangle
   pattern: EnemyPattern
   spawnElapsedMs: number
@@ -61,7 +61,7 @@ interface Enemy {
 }
 
 interface Boss {
-  body: Phaser.GameObjects.Rectangle
+  body: PhysicsRectangle
   core: Phaser.GameObjects.Ellipse
   debug?: Phaser.GameObjects.Rectangle
   hp: number
@@ -135,14 +135,6 @@ const STAGE_ONE_EVENTS: StageEnemyEvent[] = [
   ...lineWave(85_000, [72, 144, 216], 'diagonal-right'),
   ...lineWave(85_000, [408, 336, 264], 'diagonal-left'),
 ].sort((a, b) => a.timeMs - b.timeMs)
-
-function circleIntersectsRectangle(circleX: number, circleY: number, radius: number, rect: Phaser.Geom.Rectangle) {
-  const nearestX = Phaser.Math.Clamp(circleX, rect.left, rect.right)
-  const nearestY = Phaser.Math.Clamp(circleY, rect.top, rect.bottom)
-  const dx = circleX - nearestX
-  const dy = circleY - nearestY
-  return dx * dx + dy * dy <= radius * radius
-}
 
 class IntroScene extends Phaser.Scene {
   private helpPanel?: Phaser.GameObjects.Container
@@ -270,7 +262,7 @@ class IntroScene extends Phaser.Scene {
 }
 
 class ShooterScene extends Phaser.Scene {
-  private player!: Phaser.GameObjects.Image
+  private player!: PhysicsImage
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys
   private spaceKey!: Phaser.Input.Keyboard.Key
   private scoreText!: Phaser.GameObjects.Text
@@ -280,6 +272,11 @@ class ShooterScene extends Phaser.Scene {
   private bossBarFill!: Phaser.GameObjects.Rectangle
   private bossNameText!: Phaser.GameObjects.Text
   private weaponText!: Phaser.GameObjects.Text
+  private playerBulletsGroup!: Phaser.Physics.Arcade.Group
+  private powerUpsGroup!: Phaser.Physics.Arcade.Group
+  private enemyBulletsGroup!: Phaser.Physics.Arcade.Group
+  private enemiesGroup!: Phaser.Physics.Arcade.Group
+  private bossGroup!: Phaser.Physics.Arcade.Group
   private bullets: PlayerBullet[] = []
   private powerUps: PowerUp[] = []
   private enemyBullets: EnemyBullet[] = []
@@ -309,7 +306,8 @@ class ShooterScene extends Phaser.Scene {
 
     addStarfield(this, 90)
 
-    this.player = createPlayerShip(this, GAME_WIDTH / 2, GAME_HEIGHT - 74, 76)
+    this.player = createPlayerShip(this, GAME_WIDTH / 2, GAME_HEIGHT - 74, 76) as PhysicsImage
+    this.createPhysicsBodies()
 
     const keyboard = this.input.keyboard
     if (!keyboard) {
@@ -361,6 +359,66 @@ class ShooterScene extends Phaser.Scene {
       .setOrigin(0.5, 0)
 
     this.createBossUi()
+    this.registerPhysicsOverlaps()
+  }
+
+  private createPhysicsBodies() {
+    this.physics.world.setBounds(0, 0, GAME_WIDTH, GAME_HEIGHT)
+    this.physics.add.existing(this.player)
+    this.player.body.setAllowGravity(false)
+    this.player.body.setSize(32, 52, true)
+
+    const groupDefaults: Phaser.Types.Physics.Arcade.PhysicsGroupConfig = {
+      allowGravity: false,
+      immovable: true,
+    }
+
+    this.playerBulletsGroup = this.physics.add.group(groupDefaults)
+    this.powerUpsGroup = this.physics.add.group(groupDefaults)
+    this.enemyBulletsGroup = this.physics.add.group(groupDefaults)
+    this.enemiesGroup = this.physics.add.group(groupDefaults)
+    this.bossGroup = this.physics.add.group(groupDefaults)
+  }
+
+  private registerPhysicsOverlaps() {
+    this.physics.add.overlap(this.playerBulletsGroup, this.enemiesGroup, this.onPlayerBulletHitsEnemy, undefined, this)
+    this.physics.add.overlap(this.playerBulletsGroup, this.bossGroup, this.onPlayerBulletHitsBoss, undefined, this)
+    this.physics.add.overlap(this.player, this.powerUpsGroup, this.onPlayerCollectsPowerUp, undefined, this)
+    this.physics.add.overlap(this.player, this.enemyBulletsGroup, this.onEnemyBulletHitsPlayer, undefined, this)
+    this.physics.add.overlap(this.player, this.enemiesGroup, this.onEnemyHitsPlayer, undefined, this)
+  }
+
+  private enableRectanglePhysics(
+    body: Phaser.GameObjects.Rectangle,
+    group: Phaser.Physics.Arcade.Group,
+    width: number,
+    height: number,
+    directControl = false,
+  ) {
+    const physicsBody = this.physics.add.existing(body) as PhysicsRectangle
+    physicsBody.body.setAllowGravity(false)
+    physicsBody.body.setImmovable(true)
+    physicsBody.body.setSize(width, height, true)
+    physicsBody.body.setDirectControl(directControl)
+    group.add(physicsBody)
+    return physicsBody
+  }
+
+  private enableEllipsePhysics(body: Phaser.GameObjects.Ellipse, group: Phaser.Physics.Arcade.Group, radius: number) {
+    const physicsBody = this.physics.add.existing(body) as PhysicsEllipse
+    physicsBody.body.setAllowGravity(false)
+    physicsBody.body.setImmovable(true)
+    physicsBody.body.setCircle(radius)
+    group.add(physicsBody)
+    return physicsBody
+  }
+
+  private getPhysicsGameObject(object: ArcadeOverlapObject) {
+    if ('body' in object) {
+      return object
+    }
+
+    return (object as Phaser.Physics.Arcade.Body | Phaser.Physics.Arcade.StaticBody).gameObject
   }
 
   private resetGameState() {
@@ -410,10 +468,9 @@ class ShooterScene extends Phaser.Scene {
     this.updateStatus(time, elapsedMs)
     this.updateBullets(dt)
     this.updatePowerUps(dt)
-    this.updateEnemyBullets(time, dt)
-    this.updateEnemies(elapsedMs, time, dt)
+    this.updateEnemyBullets(dt)
+    this.updateEnemies(elapsedMs, dt)
     this.updateBoss(elapsedMs)
-    this.resolveHits()
   }
 
   private createBossUi() {
@@ -438,6 +495,12 @@ class ShooterScene extends Phaser.Scene {
   }
 
   private updatePlayer(dt: number) {
+    const clampedX = Phaser.Math.Clamp(this.player.x, 30, GAME_WIDTH - 30)
+    const clampedY = Phaser.Math.Clamp(this.player.y, 110, GAME_HEIGHT - 34)
+    if (clampedX !== this.player.x || clampedY !== this.player.y) {
+      this.player.body.reset(clampedX, clampedY)
+    }
+
     let dx = 0
     let dy = 0
 
@@ -458,8 +521,14 @@ class ShooterScene extends Phaser.Scene {
     }
 
     const length = Math.hypot(dx, dy) || 1
-    this.player.x = Phaser.Math.Clamp(this.player.x + (dx / length) * PLAYER_SPEED * dt, 30, GAME_WIDTH - 30)
-    this.player.y = Phaser.Math.Clamp(this.player.y + (dy / length) * PLAYER_SPEED * dt, 110, GAME_HEIGHT - 34)
+    const vx = (dx / length) * PLAYER_SPEED
+    const vy = (dy / length) * PLAYER_SPEED
+
+    this.player.body.setVelocity(
+      (this.player.x <= 30 && vx < 0) || (this.player.x >= GAME_WIDTH - 30 && vx > 0) ? 0 : vx,
+      (this.player.y <= 110 && vy < 0) || (this.player.y >= GAME_HEIGHT - 34 && vy > 0) ? 0 : vy,
+    )
+    void dt
   }
 
   private fireBullet() {
@@ -480,16 +549,12 @@ class ShooterScene extends Phaser.Scene {
   }
 
   private createPlayerBullet(x: number, y: number, angle: number) {
-    const body = this.add.rectangle(x, y, 7, 24, 0xfacc15)
+    const body = this.enableRectanglePhysics(this.add.rectangle(x, y, 7, 24, 0xfacc15), this.playerBulletsGroup, 7, 24)
     body.setStrokeStyle(1, 0xfef08a)
     body.setRotation(angle + Math.PI / 2)
+    body.body.setVelocity(Math.cos(angle) * PLAYER_BULLET_SPEED, Math.sin(angle) * PLAYER_BULLET_SPEED)
     const debug = this.createDebugRect(body.x, body.y, 7, 24, 0x22d3ee)
-    this.bullets.push({
-      body,
-      vx: Math.cos(angle) * PLAYER_BULLET_SPEED,
-      vy: Math.sin(angle) * PLAYER_BULLET_SPEED,
-      debug,
-    })
+    this.bullets.push({ body, debug })
   }
 
   private spawnStageEnemies(elapsedMs: number) {
@@ -512,9 +577,10 @@ class ShooterScene extends Phaser.Scene {
 
   private spawnPowerUp(x: number, y: number) {
     const glow = this.add.ellipse(x, y, 34, 34, 0x38bdf8, 0.18)
-    const body = this.add.rectangle(x, y, 22, 22, 0xfacc15, 0.95)
+    const body = this.enableRectanglePhysics(this.add.rectangle(x, y, 22, 22, 0xfacc15, 0.95), this.powerUpsGroup, 28, 28)
     body.setAngle(45)
     body.setStrokeStyle(2, 0xfef08a, 0.95)
+    body.body.setVelocity(0, POWER_UP_SPEED)
     const debug = this.createDebugRect(body.x, body.y, 28, 28, 0xfef08a)
 
     this.tweens.add({
@@ -531,7 +597,13 @@ class ShooterScene extends Phaser.Scene {
 
   private spawnEnemy(event: StageEnemyEvent, elapsedMs: number) {
     const isAmbush = event.pattern === 'ambush-left' || event.pattern === 'ambush-right'
-    const body = this.add.rectangle(event.x, -28, isAmbush ? 42 : 36, isAmbush ? 32 : 28, 0xfb7185)
+    const body = this.enableRectanglePhysics(
+      this.add.rectangle(event.x, -28, isAmbush ? 42 : 36, isAmbush ? 32 : 28, 0xfb7185),
+      this.enemiesGroup,
+      isAmbush ? 42 : 36,
+      isAmbush ? 32 : 28,
+      true,
+    )
     body.setStrokeStyle(2, isAmbush ? 0xf9a8d4 : 0xffc4d6)
     const debug = this.createDebugRect(body.x, body.y, body.width, body.height, 0x4ade80)
 
@@ -552,7 +624,13 @@ class ShooterScene extends Phaser.Scene {
       return
     }
 
-    const body = this.add.rectangle(GAME_WIDTH / 2, 90, 126, 82, 0x7c3aed, 0.94)
+    const body = this.enableRectanglePhysics(
+      this.add.rectangle(GAME_WIDTH / 2, 90, 126, 82, 0x7c3aed, 0.94),
+      this.bossGroup,
+      126,
+      82,
+      true,
+    )
     body.setStrokeStyle(3, 0xf0abfc)
     const core = this.add.ellipse(GAME_WIDTH / 2, 96, 36, 42, 0xfda4af, 0.95)
     core.setStrokeStyle(2, 0xffedd5)
@@ -576,8 +654,6 @@ class ShooterScene extends Phaser.Scene {
 
   private updateBullets(dt: number) {
     this.bullets = this.bullets.filter((bullet) => {
-      bullet.body.x += bullet.vx * dt
-      bullet.body.y += bullet.vy * dt
       this.syncDebugRect(bullet.debug, bullet.body)
 
       if (
@@ -592,18 +668,13 @@ class ShooterScene extends Phaser.Scene {
 
       return true
     })
+    void dt
   }
 
   private updatePowerUps(dt: number) {
     this.powerUps = this.powerUps.filter((powerUp) => {
-      powerUp.body.y += POWER_UP_SPEED * dt
       powerUp.glow.y = powerUp.body.y
       this.syncDebugRect(powerUp.debug, powerUp.body)
-
-      if (Phaser.Geom.Intersects.RectangleToRectangle(this.getPlayerHitbox(), powerUp.body.getBounds())) {
-        this.collectPowerUp(powerUp)
-        return false
-      }
 
       if (powerUp.body.y > GAME_HEIGHT + 40) {
         this.destroyPowerUp(powerUp)
@@ -612,19 +683,12 @@ class ShooterScene extends Phaser.Scene {
 
       return true
     })
+    void dt
   }
 
-  private updateEnemyBullets(time: number, dt: number) {
+  private updateEnemyBullets(dt: number) {
     this.enemyBullets = this.enemyBullets.filter((bullet) => {
-      bullet.body.x += bullet.vx * dt
-      bullet.body.y += bullet.vy * dt
       this.syncDebugCircle(bullet.debug, bullet.body)
-
-      if (circleIntersectsRectangle(bullet.body.x, bullet.body.y, bullet.radius, this.getPlayerHitbox())) {
-        this.damagePlayer(time)
-        this.destroyEnemyBullet(bullet)
-        return false
-      }
 
       if (
         bullet.body.x < -40 ||
@@ -638,20 +702,15 @@ class ShooterScene extends Phaser.Scene {
 
       return true
     })
+    void dt
   }
 
-  private updateEnemies(elapsedMs: number, time: number, dt: number) {
+  private updateEnemies(elapsedMs: number, dt: number) {
     this.enemies = this.enemies.filter((enemy) => {
       const ageMs = elapsedMs - enemy.spawnElapsedMs
       this.positionEnemy(enemy, ageMs, dt)
       this.fireEnemyPatterns(enemy, ageMs)
       this.syncDebugRect(enemy.debug, enemy.body)
-
-      if (Phaser.Geom.Intersects.RectangleToRectangle(this.getPlayerHitbox(), enemy.body.getBounds())) {
-        this.damagePlayer(time)
-        this.destroyEnemy(enemy)
-        return false
-      }
 
       if (this.shouldRemoveEnemy(enemy, ageMs)) {
         this.destroyEnemy(enemy)
@@ -761,34 +820,84 @@ class ShooterScene extends Phaser.Scene {
     }
   }
 
-  private resolveHits() {
-    for (const bullet of [...this.bullets]) {
-      const hitEnemy = this.enemies.find((enemy) =>
-        Phaser.Geom.Intersects.RectangleToRectangle(bullet.body.getBounds(), enemy.body.getBounds()),
-      )
-
-      if (hitEnemy) {
-        this.destroyPlayerBullet(bullet)
-        this.bullets = this.bullets.filter((item) => item !== bullet)
-        hitEnemy.hp -= 1
-
-        if (hitEnemy.hp <= 0) {
-          this.maybeDropPowerUp(hitEnemy.body.x, hitEnemy.body.y)
-          this.destroyEnemy(hitEnemy)
-          this.enemies = this.enemies.filter((item) => item !== hitEnemy)
-          this.score += 10
-          this.scoreText.setText(`Score ${this.score}`)
-        }
-
-        continue
-      }
-
-      if (this.boss && Phaser.Geom.Intersects.RectangleToRectangle(bullet.body.getBounds(), this.boss.body.getBounds())) {
-        this.destroyPlayerBullet(bullet)
-        this.bullets = this.bullets.filter((item) => item !== bullet)
-        this.damageBoss()
-      }
+  private onPlayerBulletHitsEnemy(
+    bulletObject: ArcadeOverlapObject,
+    enemyObject: ArcadeOverlapObject,
+  ) {
+    const bulletBody = this.getPhysicsGameObject(bulletObject)
+    const enemyBody = this.getPhysicsGameObject(enemyObject)
+    const bullet = this.bullets.find((item) => item.body === bulletBody)
+    const enemy = this.enemies.find((item) => item.body === enemyBody)
+    if (!bullet || !enemy) {
+      return
     }
+
+    this.bullets = this.bullets.filter((item) => item !== bullet)
+    this.destroyPlayerBullet(bullet)
+    enemy.hp -= 1
+
+    if (enemy.hp <= 0) {
+      this.maybeDropPowerUp(enemy.body.x, enemy.body.y)
+      this.enemies = this.enemies.filter((item) => item !== enemy)
+      this.destroyEnemy(enemy)
+      this.score += 10
+      this.scoreText.setText(`Score ${this.score}`)
+    }
+  }
+
+  private onPlayerBulletHitsBoss(bulletObject: ArcadeOverlapObject) {
+    const bulletBody = this.getPhysicsGameObject(bulletObject)
+    const bullet = this.bullets.find((item) => item.body === bulletBody)
+    if (!bullet || !this.boss) {
+      return
+    }
+
+    this.bullets = this.bullets.filter((item) => item !== bullet)
+    this.destroyPlayerBullet(bullet)
+    this.damageBoss()
+  }
+
+  private onPlayerCollectsPowerUp(
+    _playerObject: ArcadeOverlapObject,
+    powerUpObject: ArcadeOverlapObject,
+  ) {
+    const powerUpBody = this.getPhysicsGameObject(powerUpObject)
+    const powerUp = this.powerUps.find((item) => item.body === powerUpBody)
+    if (!powerUp) {
+      return
+    }
+
+    this.collectPowerUp(powerUp)
+  }
+
+  private onEnemyBulletHitsPlayer(
+    _playerObject: ArcadeOverlapObject,
+    bulletObject: ArcadeOverlapObject,
+  ) {
+    const bulletBody = this.getPhysicsGameObject(bulletObject)
+    const bullet = this.enemyBullets.find((item) => item.body === bulletBody)
+    if (!bullet) {
+      return
+    }
+
+    this.enemyBullets = this.enemyBullets.filter((item) => item !== bullet)
+    this.damagePlayer(this.time.now)
+    this.destroyEnemyBullet(bullet)
+  }
+
+  private onEnemyHitsPlayer(
+    _playerObject: ArcadeOverlapObject,
+    enemyObject: ArcadeOverlapObject,
+  ) {
+    const enemyBody = this.getPhysicsGameObject(enemyObject)
+    const enemy = this.enemies.find((item) => item.body === enemyBody)
+    if (!enemy) {
+      return
+    }
+
+    this.enemies = this.enemies.filter((item) => item !== enemy)
+    this.damagePlayer(this.time.now)
+    this.destroyEnemy(enemy)
   }
 
   private damageBoss() {
@@ -859,10 +968,11 @@ class ShooterScene extends Phaser.Scene {
   }
 
   private fireEnemyBullet(x: number, y: number, vx: number, vy: number, color: number, radius: number) {
-    const body = this.add.ellipse(x, y, radius * 2, radius * 2, color, 0.95)
+    const body = this.enableEllipsePhysics(this.add.ellipse(x, y, radius * 2, radius * 2, color, 0.95), this.enemyBulletsGroup, radius)
     body.setStrokeStyle(1, 0xffffff, 0.55)
+    body.body.setVelocity(vx, vy)
     const debug = this.createDebugCircle(x, y, radius, 0xfacc15)
-    this.enemyBullets.push({ body, vx, vy, radius, debug })
+    this.enemyBullets.push({ body, radius, debug })
   }
 
   private damagePlayer(time: number) {
@@ -898,10 +1008,6 @@ class ShooterScene extends Phaser.Scene {
     })
   }
 
-  private getPlayerHitbox() {
-    return new Phaser.Geom.Rectangle(this.player.x - 16, this.player.y - 26, 32, 52)
-  }
-
   private updateLivesDisplay() {
     this.lifeIcons.forEach((icon, index) => {
       const isActive = index < this.lives
@@ -911,6 +1017,7 @@ class ShooterScene extends Phaser.Scene {
   }
 
   private collectPowerUp(powerUp: PowerUp) {
+    this.powerUps = this.powerUps.filter((item) => item !== powerUp)
     this.destroyPowerUp(powerUp)
     this.weaponLevel = Math.min(MAX_WEAPON_LEVEL, this.weaponLevel + 1)
     this.updateWeaponDisplay()
@@ -1047,6 +1154,13 @@ const config: Phaser.Types.Core.GameConfig = {
   width: GAME_WIDTH,
   height: GAME_HEIGHT,
   backgroundColor: '#050816',
+  physics: {
+    default: 'arcade',
+    arcade: {
+      debug: DEBUG_HITBOXES,
+      gravity: { x: 0, y: 0 },
+    },
+  },
   scene: [IntroScene, ShooterScene],
   scale: {
     autoCenter: Phaser.Scale.CENTER_BOTH,
