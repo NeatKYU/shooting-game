@@ -71,6 +71,7 @@ export class ShooterScene extends Phaser.Scene {
   private hitboxCore!: Phaser.GameObjects.Ellipse
   private hitboxRing!: Phaser.GameObjects.Ellipse
   private resultPanel?: Phaser.GameObjects.Container
+  private pauseMenu?: Phaser.GameObjects.Container
   private playerBulletsGroup!: Phaser.Physics.Arcade.Group
   private powerUpsGroup!: Phaser.Physics.Arcade.Group
   private enemyBulletsGroup!: Phaser.Physics.Arcade.Group
@@ -93,6 +94,7 @@ export class ShooterScene extends Phaser.Scene {
   private statusMessageUntil = 0
   private isGameOver = false
   private isStageClear = false
+  private isPaused = false
   private chain = 0
   private maxChain = 0
   private multiplier = 1
@@ -143,6 +145,10 @@ export class ShooterScene extends Phaser.Scene {
       }
     }
 
+    if (this.isPaused) {
+      return
+    }
+
     if (this.isGameOver || this.isStageClear) {
       if (Phaser.Input.Keyboard.JustDown(this.fireKey)) {
         this.scene.restart({ settings: this.settings, mode: this.mode } satisfies ShooterSceneData)
@@ -191,6 +197,8 @@ export class ShooterScene extends Phaser.Scene {
     this.fireKey = keyboard.addKey(keyNameToCode(this.settings.controls.fire))
     this.slowKey = keyboard.addKey(keyNameToCode(this.settings.controls.slow))
     this.bombKey = keyboard.addKey(keyNameToCode(this.settings.controls.bomb))
+    keyboard.on('keydown-ESC', this.onEscapeDown, this)
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.shutdownInput, this)
     this.wasdKeys = {
       up: keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.W),
       down: keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.S),
@@ -396,6 +404,138 @@ export class ShooterScene extends Phaser.Scene {
     this.noMissRun = true
     this.noBombRun = true
     this.clearTimeMs = 0
+    this.isPaused = false
+    this.pauseMenu = undefined
+  }
+
+  private shutdownInput() {
+    this.input.keyboard?.off('keydown-ESC', this.onEscapeDown, this)
+  }
+
+  private onEscapeDown(event: KeyboardEvent) {
+    event.preventDefault()
+
+    if (this.isGameOver || this.isStageClear) {
+      return
+    }
+
+    if (this.isPaused) {
+      this.resumeGame()
+      return
+    }
+
+    this.pauseGame()
+  }
+
+  private pauseGame() {
+    if (this.isPaused) {
+      return
+    }
+
+    this.isPaused = true
+    this.player.body.setVelocity(0, 0)
+    this.physics.world.pause()
+    this.time.paused = true
+    this.tweens.pauseAll()
+    this.showPauseMenu()
+    playTone(this.settings, 360, 90, 'triangle', 0.14)
+  }
+
+  private resumeGame(playSound = true) {
+    if (!this.isPaused) {
+      return
+    }
+
+    this.pauseMenu?.destroy()
+    this.pauseMenu = undefined
+    this.isPaused = false
+    this.time.paused = false
+    this.physics.world.resume()
+    this.tweens.resumeAll()
+
+    if (playSound) {
+      playTone(this.settings, 620, 80, 'triangle', 0.13)
+    }
+  }
+
+  private showPauseMenu() {
+    this.pauseMenu?.destroy()
+
+    const menu = this.add.container(GAME_WIDTH / 2, GAME_HEIGHT / 2)
+    menu.setDepth(60)
+
+    const scrim = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x020617, 0.62)
+    scrim.setOrigin(0.5)
+    scrim.setInteractive()
+
+    const panel = this.add.rectangle(0, 0, 332, 292, 0x0f172a, 0.96)
+    panel.setStrokeStyle(2, 0x67e8f9, 0.94)
+
+    const title = this.add
+      .text(0, -112, text({ ko: '일시정지', en: 'Paused' }, this.settings.language), {
+        color: '#f8fafc',
+        fontFamily: UI_FONT,
+        fontSize: '30px',
+        fontStyle: '900',
+      })
+      .setOrigin(0.5)
+
+    const hint = this.add
+      .text(0, -76, text({ ko: 'ESC를 다시 누르면 계속합니다', en: 'Press ESC again to resume' }, this.settings.language), {
+        color: '#bae6fd',
+        fontFamily: UI_FONT,
+        fontSize: '14px',
+      })
+      .setOrigin(0.5)
+
+    menu.add([scrim, panel, title, hint])
+    this.createPauseButton(menu, -32, text({ ko: '계속하기', en: 'Resume' }, this.settings.language), () => {
+      this.resumeGame()
+    })
+    this.createPauseButton(menu, 28, text({ ko: '다시 시작', en: 'Restart' }, this.settings.language), () => {
+      this.resumeGame(false)
+      this.scene.restart({ settings: this.settings, mode: this.mode } satisfies ShooterSceneData)
+    })
+    this.createPauseButton(menu, 88, text({ ko: '메인 메뉴', en: 'Main Menu' }, this.settings.language), () => {
+      this.resumeGame(false)
+      this.scene.start('IntroScene')
+    })
+
+    this.pauseMenu = menu
+  }
+
+  private createPauseButton(
+    menu: Phaser.GameObjects.Container,
+    y: number,
+    label: string,
+    onClick: () => void,
+  ) {
+    const button = this.add.rectangle(0, y, 246, 44, 0x111827, 0.98)
+    button.setStrokeStyle(2, 0x334155, 0.95)
+    button.setInteractive({ useHandCursor: true })
+    const textLabel = this.add
+      .text(0, y, label, {
+        color: '#f8fafc',
+        fontFamily: UI_FONT,
+        fontSize: '18px',
+        fontStyle: '800',
+      })
+      .setOrigin(0.5)
+
+    button.on('pointerover', () => {
+      button.setFillStyle(0x164e63, 0.98)
+      button.setStrokeStyle(2, 0x67e8f9, 1)
+    })
+    button.on('pointerout', () => {
+      button.setFillStyle(0x111827, 0.98)
+      button.setStrokeStyle(2, 0x334155, 0.95)
+    })
+    button.on('pointerdown', () => {
+      playTone(this.settings, 520, 70, 'triangle', 0.12)
+      onClick()
+    })
+
+    menu.add([button, textLabel])
   }
 
   private updatePlayer() {

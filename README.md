@@ -18,6 +18,7 @@ npm run preview
 - Shift: focus movement and show hitbox
 - Space: fire or restart after result
 - X: bomb or return to menu after result
+- Esc: pause or resume during gameplay
 
 Fire, focus, and bomb keys can be rebound from the in-game settings panel.
 
