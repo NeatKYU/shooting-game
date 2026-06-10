@@ -40,6 +40,8 @@ export class IntroScene extends Phaser.Scene {
   private renderMenu() {
     this.tweens.killAll()
     this.children.removeAll(true)
+    this.helpPanel = undefined
+    this.settingsPanel = undefined
     addStarfield(this, 140)
 
     this.add.circle(378, 108, 52, 0x7dd3fc, 0.16)
@@ -165,72 +167,81 @@ export class IntroScene extends Phaser.Scene {
   }
 
   private toggleHelpPanel() {
-    this.settingsPanel?.destroy()
-    this.settingsPanel = undefined
-
     if (this.helpPanel) {
-      this.helpPanel.destroy()
-      this.helpPanel = undefined
+      this.closePanels()
       return
     }
 
-    const panel = this.add.container(40, 586)
-    const background = this.add.rectangle(0, 0, 400, 120, 0x020617, 0.86)
-    background.setOrigin(0, 0)
-    background.setStrokeStyle(2, 0xa78bfa, 0.85)
-
-    const title = this.add.text(22, 16, text({ ko: '하는 방법', en: 'How to Play' }, this.settings.language), {
-      color: '#f5d0fe',
-      fontFamily: UI_FONT,
-      fontSize: '20px',
-      fontStyle: '800',
-    })
+    this.closePanels()
+    const panel = this.createFullscreenPanel(text({ ko: '하는 방법', en: 'How to Play' }, this.settings.language), 0xa78bfa)
 
     const controls = this.settings.controls
     const body = this.add.text(
-      22,
-      48,
+      42,
+      116,
       text(
         {
-          ko: `방향키/WASD 이동  ${keyLabel(controls.slow, 'ko')} 저속/히트박스\n${keyLabel(controls.fire, 'ko')} 발사  ${keyLabel(controls.bomb, 'ko')} 폭탄\n탄에 가까이 붙으면 그레이즈 보너스`,
-          en: `Arrows/WASD move  ${keyLabel(controls.slow, 'en')} focus/hitbox\n${keyLabel(controls.fire, 'en')} fire  ${keyLabel(controls.bomb, 'en')} bomb\nGraze bullets closely for score`,
+          ko: [
+            `방향키/WASD - 이동`,
+            `${keyLabel(controls.slow, 'ko')} - 저속 이동과 히트박스 표시`,
+            `${keyLabel(controls.fire, 'ko')} - 발사 / 결과 화면에서 재시작`,
+            `${keyLabel(controls.bomb, 'ko')} - 폭탄 / 결과 화면에서 메뉴`,
+            '',
+            '탄에 가까이 붙으면 그레이즈 보너스가 오릅니다.',
+            '체인을 유지하면 점수 배율이 올라갑니다.',
+            '보스 연습 모드에서는 바로 보스 패턴을 반복할 수 있습니다.',
+          ].join('\n'),
+          en: [
+            'Arrows/WASD - Move',
+            `${keyLabel(controls.slow, 'en')} - Focus movement and show hitbox`,
+            `${keyLabel(controls.fire, 'en')} - Fire / restart from result`,
+            `${keyLabel(controls.bomb, 'en')} - Bomb / return to menu from result`,
+            '',
+            'Graze bullets closely to earn score.',
+            'Keep chains alive to raise your score multiplier.',
+            'Boss Practice starts directly at the boss patterns.',
+          ].join('\n'),
         },
         this.settings.language,
       ),
       {
         color: '#e5e7eb',
         fontFamily: UI_FONT,
-        fontSize: '15px',
-        lineSpacing: 5,
+        fontSize: '18px',
+        lineSpacing: 12,
+        wordWrap: { width: GAME_WIDTH - 84 },
       },
     )
 
-    panel.add([background, title, body])
+    const footer = this.add.text(
+      42,
+      GAME_HEIGHT - 76,
+      text({ ko: '오른쪽 위 X 버튼으로 닫기', en: 'Close with the X button in the top-right' }, this.settings.language),
+      {
+        color: '#bae6fd',
+        fontFamily: UI_FONT,
+        fontSize: '15px',
+      },
+    )
+
+    panel.add([body, footer])
     this.helpPanel = panel
   }
 
   private toggleSettingsPanel() {
-    this.helpPanel?.destroy()
-    this.helpPanel = undefined
-
     if (this.settingsPanel) {
-      this.settingsPanel.destroy()
-      this.settingsPanel = undefined
-      this.rebindTarget = undefined
+      this.closePanels()
       return
     }
 
+    this.closePanels()
     this.renderSettingsPanel()
   }
 
   private renderSettingsPanel() {
     this.settingsPanel?.destroy()
 
-    const panel = this.add.container(36, 568)
-    const background = this.add.rectangle(0, 0, 408, 140, 0x020617, 0.9)
-    background.setOrigin(0, 0)
-    background.setStrokeStyle(2, 0x67e8f9, 0.9)
-    panel.add(background)
+    const panel = this.createFullscreenPanel(text({ ko: '설정 / 키 변경', en: 'Settings / Keys' }, this.settings.language), 0x67e8f9)
 
     const rows = [
       {
@@ -239,6 +250,7 @@ export class IntroScene extends Phaser.Scene {
           this.settings.language = this.settings.language === 'ko' ? 'en' : 'ko'
           saveSettings(this.settings)
           this.renderMenu()
+          this.renderSettingsPanel()
         },
       },
       {
@@ -281,31 +293,40 @@ export class IntroScene extends Phaser.Scene {
     ]
 
     rows.forEach((row, index) => {
-      const x = index % 2 === 0 ? 18 : 212
-      const y = 14 + Math.floor(index / 2) * 31
-      const width = index === rows.length - 1 ? 178 : 174
-      const button = this.add.rectangle(x, y, width, 24, 0x0f172a, 0.92)
+      const x = 42
+      const y = 118 + index * 58
+      const width = GAME_WIDTH - 84
+      const button = this.add.rectangle(x, y, width, 42, 0x0f172a, 0.92)
       button.setOrigin(0, 0)
-      button.setStrokeStyle(1, 0x334155, 0.8)
+      button.setStrokeStyle(2, 0x334155, 0.9)
       button.setInteractive({ useHandCursor: true })
+      button.on('pointerover', () => {
+        button.setFillStyle(0x164e63, 0.96)
+        button.setStrokeStyle(2, 0x67e8f9, 0.95)
+      })
+      button.on('pointerout', () => {
+        button.setFillStyle(0x0f172a, 0.92)
+        button.setStrokeStyle(2, 0x334155, 0.9)
+      })
       button.on('pointerdown', row.action)
-      const label = this.add.text(x + 8, y + 4, row.label, {
+      const label = this.add.text(x + 16, y + 10, row.label, {
         color: '#e5e7eb',
         fontFamily: UI_FONT,
-        fontSize: '13px',
+        fontSize: '17px',
+        fontStyle: '700',
       })
       panel.add([button, label])
     })
 
     if (this.rebindTarget) {
       const waiting = this.add.text(
-        20,
-        114,
+        42,
+        GAME_HEIGHT - 76,
         text({ ko: '변경할 키를 누르세요...', en: 'Press a key to bind...' }, this.settings.language),
         {
           color: '#fde68a',
           fontFamily: UI_FONT,
-          fontSize: '14px',
+          fontSize: '17px',
           fontStyle: '700',
         },
       )
@@ -315,12 +336,71 @@ export class IntroScene extends Phaser.Scene {
     this.settingsPanel = panel
   }
 
+  private closePanels() {
+    this.helpPanel?.destroy()
+    this.settingsPanel?.destroy()
+    this.helpPanel = undefined
+    this.settingsPanel = undefined
+    this.rebindTarget = undefined
+  }
+
+  private createFullscreenPanel(titleText: string, accentColor: number) {
+    const panel = this.add.container(0, 0)
+    panel.setDepth(50)
+
+    const scrim = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x020617, 0.96)
+    scrim.setOrigin(0, 0)
+    scrim.setInteractive()
+
+    const topLine = this.add.rectangle(0, 0, GAME_WIDTH, 4, accentColor, 0.95)
+    topLine.setOrigin(0, 0)
+
+    const title = this.add.text(34, 34, titleText, {
+      color: '#f8fafc',
+      fontFamily: UI_FONT,
+      fontSize: '28px',
+      fontStyle: '900',
+    })
+
+    const closeButton = this.add.rectangle(GAME_WIDTH - 38, 38, 38, 38, 0x0f172a, 0.96)
+    closeButton.setStrokeStyle(2, accentColor, 0.95)
+    closeButton.setInteractive({ useHandCursor: true })
+
+    const closeLabel = this.add
+      .text(GAME_WIDTH - 38, 38, 'X', {
+        color: '#f8fafc',
+        fontFamily: UI_FONT,
+        fontSize: '22px',
+        fontStyle: '900',
+      })
+      .setOrigin(0.5)
+
+    closeButton.on('pointerover', () => {
+      closeButton.setFillStyle(0x164e63, 0.98)
+    })
+    closeButton.on('pointerout', () => {
+      closeButton.setFillStyle(0x0f172a, 0.96)
+    })
+    closeButton.on('pointerdown', () => {
+      playTone(this.settings, 420, 70, 'triangle', 0.12)
+      this.closePanels()
+    })
+
+    panel.add([scrim, topLine, title, closeButton, closeLabel])
+    return panel
+  }
+
   private startRebind(target: RebindTarget) {
     this.rebindTarget = target
     this.renderSettingsPanel()
   }
 
   private onKeyDown(event: KeyboardEvent) {
+    if ((this.helpPanel || this.settingsPanel) && event.key === 'Escape') {
+      this.closePanels()
+      return
+    }
+
     if (!this.rebindTarget) {
       return
     }
