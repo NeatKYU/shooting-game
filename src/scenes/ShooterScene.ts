@@ -1,5 +1,6 @@
 import Phaser from 'phaser'
 import { GAME_HEIGHT, GAME_WIDTH, MONO_FONT, UI_FONT } from '../game/config'
+import { SAMURAI_FRAMES, createSamuraiFrameTexture, preloadSamuraiSheet } from '../game/samuraiSprite'
 
 type Lane = 0 | 1 | 2
 type BattleState = 'intro' | 'playing' | 'victory' | 'defeat'
@@ -11,7 +12,11 @@ type Phase = 1 | 2 | 3 | 4
 interface EnemyBullet {
   id: number
   lane: Lane
+  x: number
   y: number
+  startX: number
+  startY: number
+  targetX: number
   speed: number
   radius: number
   kind: BulletKind
@@ -52,9 +57,9 @@ const PARRY_WINDOW_SEC = 0.12
 const BLOCK_WINDOW_SEC = 0.35
 const LATE_BLOCK_WINDOW_SEC = -0.12
 const BOSS_BAR_WIDTH = 330
-const NORMAL_BULLET_SPEED = 166
-const HEAVY_BULLET_SPEED = 116
-const PLAYER_SPRITE_SCALE = 1.85
+const NORMAL_BULLET_SPEED = 178
+const HEAVY_BULLET_SPEED = 124
+const PLAYER_SPRITE_SCALE = 1.15
 
 const PHASE_NAMES: Record<Phase, string> = {
   1: '단발 시험',
@@ -110,9 +115,14 @@ export class ShooterScene extends Phaser.Scene {
   private invulnerableUntil = 0
   private slowMoUntil = 0
   private slowMoScale = 1
+  private playerAnimationToken = 0
 
   constructor() {
     super('ShooterScene')
+  }
+
+  preload() {
+    preloadSamuraiSheet(this)
   }
 
   create() {
@@ -183,6 +193,7 @@ export class ShooterScene extends Phaser.Scene {
     this.invulnerableUntil = 0
     this.slowMoUntil = 0
     this.slowMoScale = 1
+    this.playerAnimationToken = 0
     this.enemyBullets = []
     this.counterShots = []
     this.queuedAttacks = []
@@ -247,12 +258,50 @@ export class ShooterScene extends Phaser.Scene {
     }
 
     this.playerLane = nextLane
+    const animationToken = this.nextPlayerAnimationToken()
     this.tweens.killTweensOf([this.player, this.playerShadow])
+    this.createPlayerAfterimage()
+    this.player.setTexture('samurai-move-1')
+    this.player.setFlipX(direction < 0)
+    this.player.setAngle(direction * 5)
     this.tweens.add({
-      targets: [this.player, this.playerShadow],
+      targets: this.player,
       x: LANES[this.playerLane],
-      duration: 115,
-      ease: 'Quad.easeOut',
+      y: PLAYER_Y - 8,
+      duration: 92,
+      ease: 'Sine.easeOut',
+      onUpdate: (tween) => {
+        if (animationToken !== this.playerAnimationToken || !this.player.active) {
+          return
+        }
+
+        this.player.setTexture(tween.progress < 0.55 ? 'samurai-move-1' : 'samurai-move-2')
+      },
+      onComplete: () => {
+        if (!this.player.active || animationToken !== this.playerAnimationToken) {
+          return
+        }
+
+        this.tweens.add({
+          targets: this.player,
+          y: PLAYER_Y,
+          angle: 0,
+          duration: 92,
+          ease: 'Sine.easeInOut',
+          onComplete: () => {
+            if (this.player.active && animationToken === this.playerAnimationToken) {
+              this.player.setTexture('samurai-idle')
+              this.player.setFlipX(false)
+            }
+          },
+        })
+      },
+    })
+    this.tweens.add({
+      targets: this.playerShadow,
+      x: LANES[this.playerLane],
+      duration: 150,
+      ease: 'Sine.easeInOut',
     })
     this.playTone(330, 45, 'triangle', 0.035)
   }
@@ -267,7 +316,7 @@ export class ShooterScene extends Phaser.Scene {
 
     const candidate = this.findSlashCandidate()
     const grade = candidate ? this.judgeSlash(candidate.timeToImpact) : 'MISS'
-    this.showSwordAnimation(grade)
+    this.showSwordAnimation(grade, candidate?.bullet)
 
     if (!candidate || grade === 'MISS') {
       this.spendSword()
@@ -325,7 +374,8 @@ export class ShooterScene extends Phaser.Scene {
   private blockBullet(bullet: EnemyBullet) {
     this.spendSword()
     this.removeEnemyBullet(bullet)
-    this.burst(LANES[bullet.lane], bullet.y, 0xe2e8f0, 9)
+    this.burst(bullet.x, bullet.y, 0xe2e8f0, 9)
+    this.createBladeClash(bullet.x, bullet.y, 0xdbeafe, 'BLOCK')
     this.showFeedback('BLOCK', 0xdbeafe)
     this.cameras.main.shake(90, 0.0025)
     this.playTone(260, 90, 'triangle', 0.045)
@@ -334,8 +384,9 @@ export class ShooterScene extends Phaser.Scene {
   private parryBullet(bullet: EnemyBullet) {
     const damage = bullet.kind === 'heavy' ? 6 : 3
     this.removeEnemyBullet(bullet)
-    this.createCounterShot(bullet.lane, bullet.y, damage, 'reflect')
-    this.burst(LANES[bullet.lane], bullet.y, 0xfef3c7, 13)
+    this.createCounterShot(bullet.lane, bullet.x, bullet.y, damage, 'reflect')
+    this.burst(bullet.x, bullet.y, 0xfef3c7, 13)
+    this.createBladeClash(bullet.x, bullet.y, 0xfacc15, 'PARRY')
     this.showFeedback('PARRY', 0xfacc15)
     this.triggerSlowMo(0.34, 135)
     this.cameras.main.shake(130, 0.004)
@@ -345,10 +396,10 @@ export class ShooterScene extends Phaser.Scene {
   private perfectParry(bullet: EnemyBullet) {
     const damage = bullet.kind === 'heavy' ? 15 : 8
     const lane = bullet.lane
-    const bulletsInLane = this.enemyBullets.filter((item) => item.lane === lane)
-    bulletsInLane.forEach((item) => this.removeEnemyBullet(item))
-    this.createCounterShot(lane, HIT_Y, damage, 'wave')
+    this.removeEnemyBullet(bullet)
+    this.createCounterShot(lane, LANES[lane], HIT_Y, damage, 'wave')
     this.burst(LANES[lane], HIT_Y, 0xffffff, 22)
+    this.createBladeClash(LANES[lane], HIT_Y, 0xffffff, 'PERFECT')
     this.darkSlashFlash()
     this.showFeedback('PERFECT', 0xffffff)
     this.triggerSlowMo(0.18, 260)
@@ -356,32 +407,52 @@ export class ShooterScene extends Phaser.Scene {
     this.playTone(880, 140, 'triangle', 0.065)
   }
 
-  private showSwordAnimation(grade: SlashGrade) {
+  private showSwordAnimation(grade: SlashGrade, bullet?: EnemyBullet) {
     const isPerfect = grade === 'PERFECT'
     const color = isPerfect ? 0xffffff : grade === 'PARRY' ? 0xfacc15 : grade === 'BLOCK' ? 0xdbeafe : 0x94a3b8
-    const x = LANES[this.playerLane]
-    const y = HIT_Y + 4
+    const clashX = bullet?.x ?? LANES[this.playerLane]
+    const clashY = bullet?.y ?? HIT_Y
+    const x = this.player.x
+    const y = this.player.y - 34
+    const animationToken = this.nextPlayerAnimationToken()
+    const attackDirection = clashX < this.player.x ? -1 : 1
 
+    this.tweens.killTweensOf(this.player)
+    this.createPlayerAfterimage()
     this.player.setTexture('samurai-slash')
-    this.player.setFlipX(this.playerLane === 0)
-    this.time.delayedCall(150, () => {
-      if (this.player.active) {
-        this.player.setTexture('samurai-idle')
-        this.player.setFlipX(false)
-      }
+    this.player.setFlipX(attackDirection < 0)
+    this.player.setAngle(attackDirection * 7)
+    this.tweens.add({
+      targets: this.player,
+      x: x + Phaser.Math.Clamp(clashX - x, -24, 24),
+      y: PLAYER_Y - (grade === 'MISS' ? 5 : 20),
+      angle: attackDirection * (isPerfect ? 11 : 8),
+      duration: 82,
+      ease: 'Cubic.easeOut',
+      onComplete: () => {
+        if (!this.player.active || animationToken !== this.playerAnimationToken) {
+          return
+        }
+
+        this.player.setTexture(grade === 'MISS' ? 'samurai-idle' : 'samurai-guard')
+        this.tweens.add({
+          targets: this.player,
+          x: LANES[this.playerLane],
+          y: PLAYER_Y,
+          angle: 0,
+          duration: 96,
+          ease: 'Sine.easeInOut',
+          onComplete: () => {
+            if (this.player.active && animationToken === this.playerAnimationToken) {
+              this.player.setTexture('samurai-idle')
+              this.player.setFlipX(false)
+            }
+          },
+        })
+      },
     })
 
-    const slash = this.add.rectangle(x + 22, y - 6, isPerfect ? 118 : 72, isPerfect ? 10 : 6, color, isPerfect ? 0.96 : 0.78)
-    slash.setRotation(-0.26)
-    slash.setDepth(20)
-    this.tweens.add({
-      targets: slash,
-      alpha: 0,
-      scaleX: isPerfect ? 1.35 : 1.16,
-      duration: isPerfect ? 240 : 150,
-      ease: 'Cubic.easeOut',
-      onComplete: () => slash.destroy(),
-    })
+    this.createSwordTrail(x, y, clashX, clashY, color, isPerfect)
   }
 
   private recoverSwords(delta: number) {
@@ -490,11 +561,17 @@ export class ShooterScene extends Phaser.Scene {
   private spawnEnemyBullet(lane: Lane, kind: BulletKind) {
     const speed = kind === 'heavy' ? HEAVY_BULLET_SPEED : NORMAL_BULLET_SPEED
     const radius = kind === 'heavy' ? 19 : 11
-    const sprite = this.createEnemyBulletSprite(LANES[lane], BULLET_START_Y, kind)
+    const startX = this.getBulletStartX(lane)
+    const startY = lane === 1 ? BULLET_START_Y : BULLET_START_Y + 18
+    const sprite = this.createEnemyBulletSprite(startX, startY, kind)
     const bullet: EnemyBullet = {
       id: this.nextId,
       lane,
-      y: BULLET_START_Y,
+      x: startX,
+      y: startY,
+      startX,
+      startY,
+      targetX: LANES[lane],
       speed,
       radius,
       kind,
@@ -502,18 +579,20 @@ export class ShooterScene extends Phaser.Scene {
     }
     this.nextId += 1
     this.enemyBullets.push(bullet)
-    this.flashLane(lane, kind === 'heavy' ? 0xf97316 : 0x93c5fd)
+    this.flashAttackStart(startX, startY, kind === 'heavy' ? 0xf97316 : 0x93c5fd)
     this.playTone(kind === 'heavy' ? 170 : 220, kind === 'heavy' ? 120 : 70, 'sine', kind === 'heavy' ? 0.035 : 0.02)
   }
 
   private updateEnemyBullets(dt: number) {
     const bullets = [...this.enemyBullets]
     for (const bullet of bullets) {
+      const previousX = bullet.x
       const previousY = bullet.y
       bullet.y += bullet.speed * dt
-      const laneDrift = Math.sin((this.battleClockMs + bullet.id * 71) / 140) * (bullet.kind === 'heavy' ? 1.5 : 0.8)
-      bullet.sprite.setPosition(LANES[bullet.lane] + laneDrift, bullet.y)
-      bullet.sprite.setRotation(bullet.sprite.rotation + dt * (bullet.kind === 'heavy' ? 1.2 : 2.4))
+      const progress = Phaser.Math.Clamp((bullet.y - bullet.startY) / (HIT_Y - bullet.startY), 0, 1)
+      bullet.x = Phaser.Math.Linear(bullet.startX, bullet.targetX, progress)
+      bullet.sprite.setPosition(bullet.x, bullet.y)
+      bullet.sprite.setRotation(Phaser.Math.Angle.Between(previousX, previousY, bullet.x, bullet.y) + Math.PI / 2)
 
       if (previousY < HIT_Y && bullet.y >= HIT_Y && bullet.lane === this.playerLane) {
         this.hitPlayer(bullet)
@@ -526,14 +605,14 @@ export class ShooterScene extends Phaser.Scene {
     }
   }
 
-  private createCounterShot(lane: Lane, y: number, damage: number, kind: CounterKind) {
+  private createCounterShot(lane: Lane, x: number, y: number, damage: number, kind: CounterKind) {
     const speed = kind === 'wave' ? 540 : 430
     const radius = kind === 'wave' ? 58 : 20
-    const sprite = this.createCounterSprite(LANES[lane], y, kind)
+    const sprite = this.createCounterSprite(x, y, kind)
     const shot: CounterShot = {
       id: this.nextId,
       lane,
-      x: LANES[lane],
+      x,
       y,
       speed,
       radius,
@@ -564,12 +643,12 @@ export class ShooterScene extends Phaser.Scene {
   private destroyBulletsOnCounterPath(shot: CounterShot) {
     const bullets = this.enemyBullets.filter((bullet) => {
       const sameLane = bullet.lane === shot.lane
-      const yDistance = Math.abs(bullet.y - shot.y)
-      return sameLane && yDistance <= shot.radius + bullet.radius
+      const distance = Phaser.Math.Distance.Between(bullet.x, bullet.y, shot.x, shot.y)
+      return sameLane && distance <= shot.radius + bullet.radius
     })
 
     bullets.forEach((bullet) => {
-      this.burst(LANES[bullet.lane], bullet.y, shot.kind === 'wave' ? 0xffffff : 0x67e8f9, 6)
+      this.burst(bullet.x, bullet.y, shot.kind === 'wave' ? 0xffffff : 0x67e8f9, 6)
       this.removeEnemyBullet(bullet)
     })
   }
@@ -601,8 +680,10 @@ export class ShooterScene extends Phaser.Scene {
     this.invulnerableUntil = this.realTimeMs + 1_000
     this.updateHud()
     this.showFeedback('HIT', 0xfb7185)
-    this.burst(LANES[this.playerLane], HIT_Y, 0xfb7185, 14)
+    this.burst(bullet.x, HIT_Y, 0xfb7185, 14)
     this.cameras.main.shake(220, 0.006)
+    const animationToken = this.nextPlayerAnimationToken()
+    this.tweens.killTweensOf(this.player)
     this.player.setTexture('samurai-guard')
     this.player.setTint(0xfb7185)
     this.tweens.add({
@@ -612,10 +693,11 @@ export class ShooterScene extends Phaser.Scene {
       repeat: 6,
       yoyo: true,
       onComplete: () => {
-        if (this.player.active) {
+        if (this.player.active && animationToken === this.playerAnimationToken) {
           this.player.alpha = 1
           this.player.clearTint()
           this.player.setTexture('samurai-idle')
+          this.player.setFlipX(false)
         }
       },
     })
@@ -679,15 +761,23 @@ export class ShooterScene extends Phaser.Scene {
     this.slowMoUntil = Math.max(this.slowMoUntil, this.realTimeMs + durationMs)
   }
 
+  private nextPlayerAnimationToken() {
+    this.playerAnimationToken += 1
+    return this.playerAnimationToken
+  }
+
   private createBackdrop() {
     this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x0f172a)
 
-    const bands = [0x172554, 0x1e1b4b, 0x312e81, 0x164e63, 0x0f766e, 0x111827]
-    bands.forEach((color, index) => {
-      this.add.rectangle(GAME_WIDTH / 2, (GAME_HEIGHT / bands.length) * (index + 0.5), GAME_WIDTH, GAME_HEIGHT / bands.length + 2, color, 0.3 + index * 0.07)
-    })
+    for (let index = 0; index < 34; index += 1) {
+      const x = Phaser.Math.Between(18, GAME_WIDTH - 18)
+      const y = Phaser.Math.Between(18, 470)
+      this.add.circle(x, y, Phaser.Math.FloatBetween(0.7, 1.9), index % 7 === 0 ? 0xfacc15 : 0xcbd5e1, Phaser.Math.FloatBetween(0.16, 0.5))
+    }
 
     this.add.circle(382, 78, 38, 0xfffbeb, 0.85).setStrokeStyle(2, 0xfacc15, 0.24)
+    this.add.polygon(110, 505, [0, 80, 92, 0, 184, 80], 0x020617, 0.34)
+    this.add.polygon(332, 500, [0, 84, 118, 0, 236, 84], 0x020617, 0.3)
     this.add.rectangle(GAME_WIDTH / 2, 186, GAME_WIDTH, 10, 0x7f1d1d, 0.9)
     this.add.rectangle(GAME_WIDTH / 2, 198, GAME_WIDTH, 7, 0xfacc15, 0.68)
     this.add.rectangle(GAME_WIDTH / 2, 624, GAME_WIDTH, 192, 0x1f2937, 0.98)
@@ -697,12 +787,7 @@ export class ShooterScene extends Phaser.Scene {
       this.add.rectangle(index * 60 + 12, 646, 34, 160, index % 2 === 0 ? 0x334155 : 0x475569, 0.5)
     }
 
-    LANES.forEach((x, index) => {
-      const lane = this.add.rectangle(x, 402, 92, 454, index === 1 ? 0x082f49 : 0x111827, index === 1 ? 0.32 : 0.28)
-      lane.setStrokeStyle(1, 0x67e8f9, 0.18)
-      this.add.rectangle(x, HIT_Y, 74, 4, 0xfacc15, 0.52)
-      this.add.rectangle(x, PLAYER_Y + 42, 82, 10, 0x020617, 0.45)
-    })
+    this.add.ellipse(GAME_WIDTH / 2, PLAYER_Y + 45, 338, 34, 0x020617, 0.3)
 
     this.add.rectangle(32, 404, 18, 388, 0x7f1d1d, 0.68)
     this.add.rectangle(GAME_WIDTH - 32, 404, 18, 388, 0x7f1d1d, 0.68)
@@ -819,16 +904,119 @@ export class ShooterScene extends Phaser.Scene {
     this.timerText?.setText(`${minutesText}:${secondsText}`)
   }
 
-  private flashLane(lane: Lane, color: number) {
-    const flash = this.add.rectangle(LANES[lane], 402, 92, 454, color, 0.12)
-    flash.setDepth(4)
+  private flashAttackStart(x: number, y: number, color: number) {
+    const flash = this.add.circle(x, y, 24, color, 0.2)
+    flash.setStrokeStyle(2, color, 0.5)
+    flash.setDepth(11)
     this.tweens.add({
       targets: flash,
       alpha: 0,
-      duration: 260,
+      scale: 1.8,
+      duration: 220,
       ease: 'Cubic.easeOut',
       onComplete: () => flash.destroy(),
     })
+  }
+
+  private getBulletStartX(lane: Lane) {
+    if (lane === 0) {
+      return GAME_WIDTH - 74
+    }
+
+    if (lane === 2) {
+      return 74
+    }
+
+    return BOSS_X
+  }
+
+  private createPlayerAfterimage() {
+    const ghost = this.add.image(this.player.x, this.player.y, this.player.texture.key)
+    ghost.setScale(this.player.scaleX, this.player.scaleY)
+    ghost.setFlipX(this.player.flipX)
+    ghost.setAngle(this.player.angle)
+    ghost.setAlpha(0.32)
+    ghost.setTint(0x67e8f9)
+    ghost.setDepth(10)
+    this.tweens.add({
+      targets: ghost,
+      alpha: 0,
+      scaleX: this.player.scaleX * 1.08,
+      scaleY: this.player.scaleY * 1.08,
+      duration: 180,
+      ease: 'Cubic.easeOut',
+      onComplete: () => ghost.destroy(),
+    })
+  }
+
+  private createSwordTrail(startX: number, startY: number, clashX: number, clashY: number, color: number, isPerfect: boolean) {
+    const angle = Phaser.Math.Angle.Between(startX, startY, clashX, clashY)
+    const distance = Phaser.Math.Distance.Between(startX, startY, clashX, clashY)
+    const length = Math.max(distance + 34, isPerfect ? 138 : 84)
+    const centerX = (startX + clashX) / 2
+    const centerY = (startY + clashY) / 2
+    const normalX = Math.cos(angle + Math.PI / 2)
+    const normalY = Math.sin(angle + Math.PI / 2)
+    const layers = [
+      { offset: 0, width: length + 34, height: isPerfect ? 18 : 11, color: 0xffffff, alpha: isPerfect ? 0.26 : 0.18, scaleX: 1.42, duration: isPerfect ? 280 : 170 },
+      { offset: -6, width: length, height: isPerfect ? 8 : 5, color, alpha: isPerfect ? 0.96 : 0.82, scaleX: 1.3, duration: isPerfect ? 230 : 145 },
+      { offset: 7, width: length * 0.76, height: 3, color: 0x67e8f9, alpha: isPerfect ? 0.8 : 0.46, scaleX: 1.18, duration: isPerfect ? 210 : 130 },
+    ]
+
+    layers.forEach((layer, index) => {
+      const slash = this.add.rectangle(centerX + normalX * layer.offset, centerY + normalY * layer.offset, layer.width, layer.height, layer.color, layer.alpha)
+      slash.setRotation(angle)
+      slash.setDepth(20 + index)
+      this.tweens.add({
+        targets: slash,
+        alpha: 0,
+        scaleX: layer.scaleX,
+        scaleY: isPerfect ? 1.8 : 1.35,
+        duration: layer.duration,
+        ease: 'Cubic.easeOut',
+        onComplete: () => slash.destroy(),
+      })
+    })
+
+    const flash = this.add.circle(clashX, clashY, isPerfect ? 24 : 15, color, isPerfect ? 0.42 : 0.26)
+    flash.setStrokeStyle(2, 0xffffff, isPerfect ? 0.9 : 0.55)
+    flash.setDepth(24)
+    this.tweens.add({
+      targets: flash,
+      alpha: 0,
+      scale: isPerfect ? 2.2 : 1.55,
+      duration: isPerfect ? 220 : 145,
+      ease: 'Cubic.easeOut',
+      onComplete: () => flash.destroy(),
+    })
+  }
+
+  private createBladeClash(x: number, y: number, color: number, grade: SlashGrade) {
+    const impact = this.add.circle(x, y, grade === 'PERFECT' ? 22 : 15, color, grade === 'BLOCK' ? 0.34 : 0.5)
+    impact.setStrokeStyle(2, color, 0.95)
+    impact.setDepth(32)
+    this.tweens.add({
+      targets: impact,
+      alpha: 0,
+      scale: grade === 'PERFECT' ? 2.3 : 1.7,
+      duration: grade === 'PERFECT' ? 260 : 170,
+      ease: 'Cubic.easeOut',
+      onComplete: () => impact.destroy(),
+    })
+
+    for (let index = 0; index < 4; index += 1) {
+      const spark = this.add.rectangle(x, y, grade === 'BLOCK' ? 22 : 34, 3, color, 0.9)
+      spark.setRotation((Math.PI * index) / 4 + Phaser.Math.FloatBetween(-0.2, 0.2))
+      spark.setDepth(33)
+      this.tweens.add({
+        targets: spark,
+        alpha: 0,
+        scaleX: grade === 'PERFECT' ? 1.9 : 1.35,
+        duration: 160,
+        ease: 'Cubic.easeOut',
+        onComplete: () => spark.destroy(),
+      })
+    }
   }
 
   private flashSwordPips(color: number) {
@@ -904,11 +1092,12 @@ export class ShooterScene extends Phaser.Scene {
     const accent = kind === 'heavy' ? 0xfef3c7 : 0xe0f2fe
     const radius = kind === 'heavy' ? 20 : 12
     const body = this.add.container(x, y)
+    const trail = this.add.rectangle(0, radius + 18, kind === 'heavy' ? 9 : 6, kind === 'heavy' ? 58 : 40, color, kind === 'heavy' ? 0.18 : 0.14)
     const glow = this.add.circle(0, 0, radius + 9, color, kind === 'heavy' ? 0.22 : 0.15)
     const core = this.add.circle(0, 0, radius, color, 0.96)
     core.setStrokeStyle(2, accent, 0.88)
     const edge = this.add.rectangle(0, 0, kind === 'heavy' ? 5 : 3, radius * 1.55, accent, 0.74)
-    body.add([glow, core, edge])
+    body.add([trail, glow, core, edge])
     body.setDepth(kind === 'heavy' ? 13 : 12)
     return body
   }
@@ -916,13 +1105,42 @@ export class ShooterScene extends Phaser.Scene {
   private createCounterSprite(x: number, y: number, kind: CounterKind) {
     const body = this.add.container(x, y)
     if (kind === 'wave') {
-      const glow = this.add.rectangle(0, 0, 122, 18, 0xffffff, 0.18)
-      const blade = this.add.rectangle(0, 0, 104, 8, 0xffffff, 0.96)
-      const core = this.add.rectangle(0, -8, 76, 4, 0xfacc15, 0.82)
-      glow.setRotation(-0.18)
-      blade.setRotation(-0.18)
-      core.setRotation(-0.18)
-      body.add([glow, blade, core])
+      const wave = this.add.graphics()
+      wave.fillStyle(0xffffff, 0.22)
+      wave.fillPoints(
+        [
+          new Phaser.Math.Vector2(-68, 12),
+          new Phaser.Math.Vector2(-18, -20),
+          new Phaser.Math.Vector2(76, -8),
+          new Phaser.Math.Vector2(22, 15),
+        ],
+        true,
+      )
+      wave.fillStyle(0xffffff, 0.94)
+      wave.fillPoints(
+        [
+          new Phaser.Math.Vector2(-52, 5),
+          new Phaser.Math.Vector2(-12, -11),
+          new Phaser.Math.Vector2(62, -5),
+          new Phaser.Math.Vector2(8, 7),
+        ],
+        true,
+      )
+      wave.fillStyle(0xfacc15, 0.78)
+      wave.fillPoints(
+        [
+          new Phaser.Math.Vector2(-30, -4),
+          new Phaser.Math.Vector2(10, -12),
+          new Phaser.Math.Vector2(56, -6),
+          new Phaser.Math.Vector2(8, 0),
+        ],
+        true,
+      )
+      const tail = this.add.rectangle(-36, 9, 66, 5, 0x67e8f9, 0.36)
+      tail.setRotation(-0.22)
+      const edge = this.add.rectangle(4, -11, 88, 3, 0xffffff, 0.66)
+      edge.setRotation(0.08)
+      body.add([wave, tail, edge])
     } else {
       const trail = this.add.rectangle(0, 18, 6, 42, 0x67e8f9, 0.22)
       const core = this.add.circle(0, 0, 9, 0xfef3c7, 0.96)
@@ -937,76 +1155,26 @@ export class ShooterScene extends Phaser.Scene {
   private createSpriteTextures() {
     this.createSamuraiIdleTexture()
     this.createSamuraiGuardTexture()
+    this.createSamuraiMoveTextures()
     this.createSamuraiSlashTexture()
     this.createBossTexture()
   }
 
   private createSamuraiIdleTexture() {
-    this.drawTexture('samurai-idle', 44, 52, (pixel) => {
-      pixel(18, 3, 10, 4, 0xfef08a)
-      pixel(14, 7, 18, 8, 0xfacc15)
-      pixel(16, 14, 15, 8, 0xf59e0b)
-      pixel(19, 20, 9, 4, 0x92400e)
-      pixel(13, 23, 18, 17, 0x111827)
-      pixel(17, 25, 11, 13, 0x1f2937)
-      pixel(18, 28, 8, 3, 0x0f766e)
-      pixel(30, 23, 9, 15, 0xb91c1c)
-      pixel(34, 31, 6, 6, 0xef4444)
-      pixel(9, 23, 6, 17, 0x334155)
-      pixel(31, 24, 5, 15, 0x334155)
-      pixel(13, 40, 8, 9, 0x111827)
-      pixel(25, 40, 8, 9, 0x111827)
-      pixel(10, 48, 12, 3, 0x020617)
-      pixel(24, 48, 12, 3, 0x020617)
-      pixel(7, 13, 4, 30, 0xe5e7eb)
-      pixel(5, 15, 3, 22, 0x64748b)
-      pixel(9, 10, 5, 7, 0x111827)
-    })
+    createSamuraiFrameTexture(this, 'samurai-idle', SAMURAI_FRAMES.backIdle)
   }
 
   private createSamuraiGuardTexture() {
-    this.drawTexture('samurai-guard', 44, 52, (pixel) => {
-      pixel(18, 3, 11, 4, 0xfef08a)
-      pixel(13, 7, 19, 8, 0xfacc15)
-      pixel(16, 14, 15, 8, 0xf59e0b)
-      pixel(19, 20, 9, 4, 0x92400e)
-      pixel(13, 24, 18, 16, 0x111827)
-      pixel(17, 26, 11, 11, 0x1f2937)
-      pixel(18, 29, 8, 3, 0x0f766e)
-      pixel(30, 23, 9, 14, 0xb91c1c)
-      pixel(8, 21, 5, 20, 0x334155)
-      pixel(31, 22, 5, 18, 0x334155)
-      pixel(14, 40, 8, 9, 0x111827)
-      pixel(25, 40, 8, 9, 0x111827)
-      pixel(11, 48, 12, 3, 0x020617)
-      pixel(24, 48, 12, 3, 0x020617)
-      pixel(22, 8, 5, 39, 0xf8fafc)
-      pixel(20, 12, 3, 28, 0x64748b)
-      pixel(18, 29, 13, 5, 0x111827)
-    })
+    createSamuraiFrameTexture(this, 'samurai-guard', SAMURAI_FRAMES.backGuard)
+  }
+
+  private createSamuraiMoveTextures() {
+    createSamuraiFrameTexture(this, 'samurai-move-1', SAMURAI_FRAMES.moveOne)
+    createSamuraiFrameTexture(this, 'samurai-move-2', SAMURAI_FRAMES.moveTwo)
   }
 
   private createSamuraiSlashTexture() {
-    this.drawTexture('samurai-slash', 64, 52, (pixel) => {
-      pixel(24, 3, 11, 4, 0xfef08a)
-      pixel(20, 7, 19, 8, 0xfacc15)
-      pixel(22, 14, 16, 8, 0xf59e0b)
-      pixel(25, 20, 9, 4, 0x92400e)
-      pixel(20, 24, 18, 16, 0x111827)
-      pixel(24, 26, 11, 11, 0x1f2937)
-      pixel(25, 29, 8, 3, 0x0f766e)
-      pixel(37, 23, 12, 10, 0xb91c1c)
-      pixel(46, 27, 9, 5, 0xef4444)
-      pixel(16, 24, 6, 16, 0x334155)
-      pixel(38, 23, 6, 16, 0x334155)
-      pixel(20, 40, 8, 9, 0x111827)
-      pixel(31, 40, 8, 9, 0x111827)
-      pixel(17, 48, 12, 3, 0x020617)
-      pixel(30, 48, 12, 3, 0x020617)
-      pixel(37, 15, 21, 4, 0xf8fafc)
-      pixel(55, 12, 6, 10, 0xe2e8f0)
-      pixel(36, 18, 8, 6, 0x111827)
-    })
+    createSamuraiFrameTexture(this, 'samurai-slash', SAMURAI_FRAMES.slash)
   }
 
   private createBossTexture() {

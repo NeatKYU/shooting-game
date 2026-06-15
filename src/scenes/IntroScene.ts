@@ -1,11 +1,16 @@
 import Phaser from 'phaser'
 import { GAME_HEIGHT, GAME_WIDTH, MONO_FONT, UI_FONT } from '../game/config'
+import { SAMURAI_FRAMES, createSamuraiFrameTexture, preloadSamuraiSheet } from '../game/samuraiSprite'
 
 export class IntroScene extends Phaser.Scene {
   private startButton?: Phaser.GameObjects.Container
 
   constructor() {
     super('IntroScene')
+  }
+
+  preload() {
+    preloadSamuraiSheet(this)
   }
 
   create() {
@@ -82,8 +87,8 @@ export class IntroScene extends Phaser.Scene {
 
     const bossShadow = this.add.ellipse(GAME_WIDTH / 2, 296, 142, 28, 0x000000, 0.26)
     const boss = this.add.image(GAME_WIDTH / 2, 246, 'intro-boss').setScale(3.1)
-    const samuraiShadow = this.add.ellipse(GAME_WIDTH / 2, 522, 78, 19, 0x000000, 0.32)
-    const samurai = this.add.image(GAME_WIDTH / 2, 486, 'intro-samurai').setScale(2.15)
+    const samuraiShadow = this.add.ellipse(GAME_WIDTH / 2, 522, 86, 20, 0x000000, 0.32)
+    const samurai = this.add.image(GAME_WIDTH / 2, 486, 'intro-samurai').setScale(2.25)
     samurai.setDepth(8)
 
     this.tweens.add({
@@ -142,25 +147,7 @@ export class IntroScene extends Phaser.Scene {
   }
 
   private createMenuTextures() {
-    this.drawTexture('intro-samurai', 54, 58, (pixel) => {
-      pixel(21, 3, 12, 4, 0xfef08a)
-      pixel(16, 7, 22, 9, 0xfacc15)
-      pixel(18, 15, 18, 9, 0xf59e0b)
-      pixel(22, 22, 10, 4, 0x92400e)
-      pixel(16, 26, 19, 17, 0x111827)
-      pixel(20, 28, 12, 12, 0x1f2937)
-      pixel(21, 32, 8, 3, 0x0f766e)
-      pixel(34, 25, 13, 14, 0xb91c1c)
-      pixel(40, 34, 8, 5, 0xef4444)
-      pixel(11, 26, 6, 17, 0x334155)
-      pixel(35, 26, 6, 16, 0x334155)
-      pixel(16, 43, 9, 10, 0x111827)
-      pixel(29, 43, 9, 10, 0x111827)
-      pixel(13, 53, 13, 3, 0x020617)
-      pixel(28, 53, 13, 3, 0x020617)
-      pixel(9, 13, 5, 35, 0xe5e7eb)
-      pixel(7, 17, 3, 25, 0x64748b)
-    })
+    createSamuraiFrameTexture(this, 'intro-samurai', SAMURAI_FRAMES.backIdle)
 
     this.drawTexture('intro-boss', 72, 76, (pixel) => {
       pixel(28, 3, 16, 7, 0xe5e7eb)
