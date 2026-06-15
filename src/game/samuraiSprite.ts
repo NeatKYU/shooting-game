@@ -29,20 +29,56 @@ export function createSamuraiFrameTexture(scene: Phaser.Scene, key: string, crop
     return
   }
 
+  const canvas = renderSamuraiFrame(scene, crop)
+  if (!canvas) {
+    return
+  }
+
+  scene.textures.addCanvas(key, canvas)
+}
+
+export function createSamuraiBreathFrameTexture(scene: Phaser.Scene, key: string, crop: SamuraiFrameCrop, frameIndex: number) {
+  if (scene.textures.exists(key)) {
+    return
+  }
+
+  const baseCanvas = renderSamuraiFrame(scene, crop)
+  if (!baseCanvas) {
+    return
+  }
+
+  const canvas = document.createElement('canvas')
+  canvas.width = crop.width
+  canvas.height = crop.height
+  const context = canvas.getContext('2d')
+  if (!context) {
+    return
+  }
+
+  context.imageSmoothingEnabled = false
+  const headBob = [0, 1, 2, 1][frameIndex % 4]
+  const torsoBottom = Math.floor(crop.height * 0.72)
+  const legsTop = Math.floor(crop.height * 0.66)
+  context.drawImage(baseCanvas, 0, 0, crop.width, torsoBottom, 0, headBob, crop.width, torsoBottom)
+  context.drawImage(baseCanvas, 0, legsTop, crop.width, crop.height - legsTop, 0, legsTop, crop.width, crop.height - legsTop)
+  scene.textures.addCanvas(key, canvas)
+}
+
+function renderSamuraiFrame(scene: Phaser.Scene, crop: SamuraiFrameCrop) {
   const source = scene.textures.get(SAMURAI_SHEET_KEY).getSourceImage() as CanvasImageSource
   const canvas = document.createElement('canvas')
   canvas.width = crop.width
   canvas.height = crop.height
   const context = canvas.getContext('2d', { willReadFrequently: true })
   if (!context) {
-    return
+    return undefined
   }
 
   context.drawImage(source, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height)
   const imageData = context.getImageData(0, 0, crop.width, crop.height)
   clearConnectedCheckerboard(imageData, crop.width, crop.height)
   context.putImageData(imageData, 0, 0)
-  scene.textures.addCanvas(key, canvas)
+  return canvas
 }
 
 function clearConnectedCheckerboard(imageData: ImageData, width: number, height: number) {

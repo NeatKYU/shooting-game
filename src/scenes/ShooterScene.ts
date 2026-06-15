@@ -1,6 +1,6 @@
 import Phaser from 'phaser'
 import { GAME_HEIGHT, GAME_WIDTH, MONO_FONT, UI_FONT } from '../game/config'
-import { SAMURAI_FRAMES, createSamuraiFrameTexture, preloadSamuraiSheet } from '../game/samuraiSprite'
+import { SAMURAI_FRAMES, createSamuraiBreathFrameTexture, createSamuraiFrameTexture, preloadSamuraiSheet } from '../game/samuraiSprite'
 
 type Lane = 0 | 1 | 2
 type BattleState = 'intro' | 'playing' | 'victory' | 'defeat'
@@ -60,6 +60,9 @@ const BOSS_BAR_WIDTH = 330
 const NORMAL_BULLET_SPEED = 178
 const HEAVY_BULLET_SPEED = 124
 const PLAYER_SPRITE_SCALE = 1.15
+const PLAYER_IDLE_TEXTURES = ['samurai-idle-0', 'samurai-idle-1', 'samurai-idle-2', 'samurai-idle-3'] as const
+const PLAYER_IDLE_Y_OFFSETS = [0, -1, -2, -1] as const
+const PLAYER_IDLE_FRAME_MS = 155
 
 const PHASE_NAMES: Record<Phase, string> = {
   1: '단발 시험',
@@ -116,6 +119,10 @@ export class ShooterScene extends Phaser.Scene {
   private slowMoUntil = 0
   private slowMoScale = 1
   private playerAnimationToken = 0
+  private playerAnimationActive = false
+  private playerFacing: -1 | 1 = 1
+  private idleFrameIndex = 0
+  private idleFrameElapsedMs = 0
 
   constructor() {
     super('ShooterScene')
@@ -140,6 +147,7 @@ export class ShooterScene extends Phaser.Scene {
   update(_time: number, delta: number) {
     this.realTimeMs += delta
     this.handleInput()
+    this.updatePlayerIdle(delta)
 
     const timeScale = this.realTimeMs < this.slowMoUntil ? this.slowMoScale : 1
     if (this.realTimeMs >= this.slowMoUntil) {
@@ -194,6 +202,10 @@ export class ShooterScene extends Phaser.Scene {
     this.slowMoUntil = 0
     this.slowMoScale = 1
     this.playerAnimationToken = 0
+    this.playerAnimationActive = false
+    this.playerFacing = 1
+    this.idleFrameIndex = 0
+    this.idleFrameElapsedMs = 0
     this.enemyBullets = []
     this.counterShots = []
     this.queuedAttacks = []
@@ -258,11 +270,12 @@ export class ShooterScene extends Phaser.Scene {
     }
 
     this.playerLane = nextLane
+    this.playerFacing = direction
     const animationToken = this.nextPlayerAnimationToken()
     this.tweens.killTweensOf([this.player, this.playerShadow])
     this.createPlayerAfterimage()
     this.player.setTexture('samurai-move-1')
-    this.player.setFlipX(direction < 0)
+    this.player.setFlipX(this.playerFacing < 0)
     this.player.setAngle(direction * 5)
     this.tweens.add({
       targets: this.player,
@@ -290,8 +303,7 @@ export class ShooterScene extends Phaser.Scene {
           ease: 'Sine.easeInOut',
           onComplete: () => {
             if (this.player.active && animationToken === this.playerAnimationToken) {
-              this.player.setTexture('samurai-idle')
-              this.player.setFlipX(false)
+              this.finishPlayerAnimation(animationToken)
             }
           },
         })
@@ -434,7 +446,7 @@ export class ShooterScene extends Phaser.Scene {
           return
         }
 
-        this.player.setTexture(grade === 'MISS' ? 'samurai-idle' : 'samurai-guard')
+        this.player.setTexture(grade === 'MISS' ? PLAYER_IDLE_TEXTURES[0] : 'samurai-guard')
         this.tweens.add({
           targets: this.player,
           x: LANES[this.playerLane],
@@ -444,8 +456,7 @@ export class ShooterScene extends Phaser.Scene {
           ease: 'Sine.easeInOut',
           onComplete: () => {
             if (this.player.active && animationToken === this.playerAnimationToken) {
-              this.player.setTexture('samurai-idle')
-              this.player.setFlipX(false)
+              this.finishPlayerAnimation(animationToken)
             }
           },
         })
@@ -630,7 +641,11 @@ export class ShooterScene extends Phaser.Scene {
       shot.y -= shot.speed * dt
       shot.x += (BOSS_X - shot.x) * dt * (shot.kind === 'wave' ? 1.2 : 0.72)
       shot.sprite.setPosition(shot.x, shot.y)
-      shot.sprite.setRotation(shot.sprite.rotation + dt * (shot.kind === 'wave' ? 0.4 : 5.6))
+      if (shot.kind === 'wave') {
+        shot.sprite.setRotation(-0.08 + Math.sin((this.realTimeMs + shot.id * 37) * 0.018) * 0.055)
+      } else {
+        shot.sprite.setRotation(shot.sprite.rotation + dt * 5.6)
+      }
       this.destroyBulletsOnCounterPath(shot)
 
       if (shot.y <= BOSS_Y + 34) {
@@ -696,8 +711,7 @@ export class ShooterScene extends Phaser.Scene {
         if (this.player.active && animationToken === this.playerAnimationToken) {
           this.player.alpha = 1
           this.player.clearTint()
-          this.player.setTexture('samurai-idle')
-          this.player.setFlipX(false)
+          this.finishPlayerAnimation(animationToken)
         }
       },
     })
@@ -763,7 +777,48 @@ export class ShooterScene extends Phaser.Scene {
 
   private nextPlayerAnimationToken() {
     this.playerAnimationToken += 1
+    this.playerAnimationActive = true
     return this.playerAnimationToken
+  }
+
+  private finishPlayerAnimation(animationToken: number) {
+    if (animationToken !== this.playerAnimationToken || !this.player.active) {
+      return
+    }
+
+    this.playerAnimationActive = false
+    this.idleFrameElapsedMs = 0
+    this.idleFrameIndex = 0
+    this.setPlayerIdlePose()
+  }
+
+  private updatePlayerIdle(delta: number) {
+    if (!this.player?.active || this.playerAnimationActive || this.state === 'victory' || this.state === 'defeat') {
+      return
+    }
+
+    this.idleFrameElapsedMs += delta
+    while (this.idleFrameElapsedMs >= PLAYER_IDLE_FRAME_MS) {
+      this.idleFrameElapsedMs -= PLAYER_IDLE_FRAME_MS
+      this.idleFrameIndex = (this.idleFrameIndex + 1) % PLAYER_IDLE_TEXTURES.length
+    }
+
+    this.setPlayerIdlePose()
+  }
+
+  private setPlayerIdlePose() {
+    const textureKey = PLAYER_IDLE_TEXTURES[this.idleFrameIndex]
+    if (this.player.texture.key !== textureKey) {
+      this.player.setTexture(textureKey)
+    }
+
+    this.player.setFlipX(this.playerFacing < 0)
+    this.player.setAngle(0)
+    this.player.y = PLAYER_Y + PLAYER_IDLE_Y_OFFSETS[this.idleFrameIndex]
+
+    if (this.playerShadow?.active) {
+      this.playerShadow.setScale(1 + this.idleFrameIndex * 0.012, 1)
+    }
   }
 
   private createBackdrop() {
@@ -802,9 +857,10 @@ export class ShooterScene extends Phaser.Scene {
 
     this.playerShadow = this.add.ellipse(LANES[this.playerLane], PLAYER_Y + 32, 72, 18, 0x000000, 0.34)
     this.playerShadow.setDepth(9)
-    this.player = this.add.image(LANES[this.playerLane], PLAYER_Y, 'samurai-idle')
+    this.player = this.add.image(LANES[this.playerLane], PLAYER_Y, PLAYER_IDLE_TEXTURES[0])
     this.player.setScale(PLAYER_SPRITE_SCALE)
     this.player.setDepth(14)
+    this.setPlayerIdlePose()
   }
 
   private createHud() {
@@ -1105,50 +1161,120 @@ export class ShooterScene extends Phaser.Scene {
   private createCounterSprite(x: number, y: number, kind: CounterKind) {
     const body = this.add.container(x, y)
     if (kind === 'wave') {
-      const wave = this.add.graphics()
-      wave.fillStyle(0xffffff, 0.22)
-      wave.fillPoints(
+      const slash = this.add.container(0, 0)
+      slash.setRotation(-0.82)
+
+      const beam = this.add.graphics()
+      beam.fillStyle(0xffffff, 0.24)
+      beam.fillPoints(
         [
-          new Phaser.Math.Vector2(-68, 12),
-          new Phaser.Math.Vector2(-18, -20),
-          new Phaser.Math.Vector2(76, -8),
-          new Phaser.Math.Vector2(22, 15),
+          new Phaser.Math.Vector2(-100, 26),
+          new Phaser.Math.Vector2(-34, -30),
+          new Phaser.Math.Vector2(132, -16),
+          new Phaser.Math.Vector2(88, 14),
+          new Phaser.Math.Vector2(-66, 36),
         ],
         true,
       )
-      wave.fillStyle(0xffffff, 0.94)
-      wave.fillPoints(
+      beam.fillStyle(0x5eead4, 0.78)
+      beam.fillPoints(
         [
-          new Phaser.Math.Vector2(-52, 5),
-          new Phaser.Math.Vector2(-12, -11),
-          new Phaser.Math.Vector2(62, -5),
-          new Phaser.Math.Vector2(8, 7),
+          new Phaser.Math.Vector2(-90, 17),
+          new Phaser.Math.Vector2(-8, -20),
+          new Phaser.Math.Vector2(128, -14),
+          new Phaser.Math.Vector2(34, 6),
         ],
         true,
       )
-      wave.fillStyle(0xfacc15, 0.78)
-      wave.fillPoints(
+      beam.fillStyle(0xffffff, 0.96)
+      beam.fillPoints(
         [
-          new Phaser.Math.Vector2(-30, -4),
-          new Phaser.Math.Vector2(10, -12),
-          new Phaser.Math.Vector2(56, -6),
-          new Phaser.Math.Vector2(8, 0),
+          new Phaser.Math.Vector2(-74, 10),
+          new Phaser.Math.Vector2(8, -12),
+          new Phaser.Math.Vector2(100, -10),
+          new Phaser.Math.Vector2(22, 2),
         ],
         true,
       )
-      const tail = this.add.rectangle(-36, 9, 66, 5, 0x67e8f9, 0.36)
-      tail.setRotation(-0.22)
-      const edge = this.add.rectangle(4, -11, 88, 3, 0xffffff, 0.66)
-      edge.setRotation(0.08)
-      body.add([wave, tail, edge])
+      beam.fillStyle(0xfacc15, 0.86)
+      beam.fillPoints(
+        [
+          new Phaser.Math.Vector2(-98, 33),
+          new Phaser.Math.Vector2(-58, -7),
+          new Phaser.Math.Vector2(-22, 10),
+          new Phaser.Math.Vector2(-64, 42),
+        ],
+        true,
+      )
+      beam.lineStyle(2, 0x67e8f9, 0.8)
+      beam.strokePoints(
+        [
+          new Phaser.Math.Vector2(-76, 24),
+          new Phaser.Math.Vector2(-12, -9),
+          new Phaser.Math.Vector2(96, -12),
+        ],
+        false,
+      )
+
+      const orbitBack = this.add.ellipse(28, -10, 124, 34, 0xfacc15, 0)
+      orbitBack.setStrokeStyle(5, 0xfacc15, 0.34)
+      orbitBack.setRotation(-0.08)
+      const orbitCore = this.add.ellipse(24, -11, 108, 27, 0xffffff, 0)
+      orbitCore.setStrokeStyle(2, 0xfff7ad, 0.84)
+      orbitCore.setRotation(-0.04)
+      const crescentOne = this.add.rectangle(-56, 28, 72, 8, 0xfacc15, 0.58)
+      crescentOne.setRotation(-0.28)
+      const crescentTwo = this.add.rectangle(60, -28, 62, 7, 0xfef3c7, 0.5)
+      crescentTwo.setRotation(0.16)
+      const baseGlow = this.add.circle(-74, 24, 34, 0xfacc15, 0.2)
+      const coreGlow = this.add.circle(10, -4, 42, 0x67e8f9, 0.14)
+
+      for (let index = 0; index < 7; index += 1) {
+        const spark = this.add.circle(Phaser.Math.Between(18, 86), Phaser.Math.Between(-36, 14), Phaser.Math.FloatBetween(1.6, 3.2), index % 2 === 0 ? 0xfef3c7 : 0xffffff, Phaser.Math.FloatBetween(0.68, 0.95))
+        slash.add(spark)
+        this.tweens.add({
+          targets: spark,
+          alpha: 0.12,
+          scale: 1.8,
+          duration: Phaser.Math.Between(180, 320),
+          ease: 'Sine.easeInOut',
+          repeat: -1,
+          yoyo: true,
+        })
+      }
+
+      slash.add([baseGlow, coreGlow, orbitBack, beam, orbitCore, crescentOne, crescentTwo])
+      body.add(slash)
     } else {
-      const trail = this.add.rectangle(0, 18, 6, 42, 0x67e8f9, 0.22)
-      const core = this.add.circle(0, 0, 9, 0xfef3c7, 0.96)
-      core.setStrokeStyle(2, 0x67e8f9, 0.82)
-      body.add([trail, core])
+      const slash = this.add.graphics()
+      slash.fillStyle(0x67e8f9, 0.35)
+      slash.fillPoints(
+        [
+          new Phaser.Math.Vector2(-10, 26),
+          new Phaser.Math.Vector2(4, -30),
+          new Phaser.Math.Vector2(14, 10),
+          new Phaser.Math.Vector2(0, 34),
+        ],
+        true,
+      )
+      slash.fillStyle(0xffffff, 0.95)
+      slash.fillPoints(
+        [
+          new Phaser.Math.Vector2(-4, 16),
+          new Phaser.Math.Vector2(3, -23),
+          new Phaser.Math.Vector2(8, 9),
+          new Phaser.Math.Vector2(1, 24),
+        ],
+        true,
+      )
+      const ring = this.add.ellipse(0, 2, 42, 13, 0xfacc15, 0)
+      ring.setStrokeStyle(2, 0xfef3c7, 0.72)
+      ring.setRotation(-0.3)
+      const trail = this.add.rectangle(0, 22, 5, 44, 0x67e8f9, 0.2)
+      body.add([trail, slash, ring])
     }
 
-    body.setDepth(18)
+    body.setDepth(kind === 'wave' ? 26 : 18)
     return body
   }
 
@@ -1162,6 +1288,9 @@ export class ShooterScene extends Phaser.Scene {
 
   private createSamuraiIdleTexture() {
     createSamuraiFrameTexture(this, 'samurai-idle', SAMURAI_FRAMES.backIdle)
+    PLAYER_IDLE_TEXTURES.forEach((textureKey, index) => {
+      createSamuraiBreathFrameTexture(this, textureKey, SAMURAI_FRAMES.backIdle, index)
+    })
   }
 
   private createSamuraiGuardTexture() {
