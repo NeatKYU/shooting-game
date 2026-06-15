@@ -1,7 +1,8 @@
 import Phaser from 'phaser'
 import './style.css'
 import { DEBUG_HITBOXES, GAME_HEIGHT, GAME_WIDTH } from './game/config'
-import { IntroScene, ShooterScene } from './scenes'
+import { IntroScene } from './scenes/IntroScene'
+import { ShooterScene } from './scenes/ShooterScene'
 
 const config: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
@@ -20,6 +21,9 @@ const config: Phaser.Types.Core.GameConfig = {
     },
   },
   scene: [IntroScene, ShooterScene],
+  render: {
+    pixelArt: true,
+  },
   scale: {
     autoCenter: Phaser.Scale.CENTER_BOTH,
     mode: Phaser.Scale.FIT,
