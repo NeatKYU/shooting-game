@@ -1,8 +1,8 @@
-# Meteor Front Demo
+# Samurai Parry
 
-Vite, TypeScript, and Phaser 기반의 클래식 탄막 슈팅 데모입니다.
+Vite, TypeScript, Phaser 기반의 3라인 사무라이 패링 보스전 프로토타입입니다.
 
-현재 방향은 Steam 위시리스트 확보를 위한 **데모 먼저 + 클래식 탄막**입니다. 핵심 루프는 고정 웨이브 암기, 저속 이동/히트박스 기반 회피, 그레이즈와 체인 점수, 보스 2페이즈, 클리어 랭크입니다.
+현재 구현 범위는 레벨 1 `가면 무사의 시험`입니다. 플레이어는 왼쪽, 중앙, 오른쪽 3개 라인을 이동하며 보스의 탄을 검으로 막고, 정확한 패링으로 탄을 되돌려 보스를 쓰러뜨립니다.
 
 ## Scripts
 
@@ -14,33 +14,16 @@ npm run preview
 
 ## Controls
 
-- Arrow keys / WASD: move
-- Shift: focus movement and show hitbox
-- Space: fire or restart after result
-- X: bomb or return to menu after result
-- Esc: pause or resume during gameplay
+- `A` / `←`: 왼쪽 라인으로 이동
+- `D` / `→`: 오른쪽 라인으로 이동
+- `Space` / `J`: 검 휘두르기
 
-Fire, focus, and bomb keys can be rebound from the in-game settings panel.
+## Implemented Scope
 
-## Demo Features
-
-- Two difficulties: Novice and Arcade
-- Demo Run and Boss Practice modes
-- Four enemy archetypes with data-driven movement and bullet patterns
-- Data-driven stage, enemy, bullet pattern, score, and settings definitions
-- Graze scoring, chain multiplier, local best score, no-miss/no-bomb bonuses
-- Boss phase transition with bullet cancel and denser phase-two patterns
-- Bilingual Korean/English menu and HUD text
-- Generated sound feedback, screen shake toggle, visible hitbox option
-
-## Steam Prep
-
-See [docs/steam-demo-checklist.md](/Users/sun/dev/client/shooting-game/docs/steam-demo-checklist.md) for the current Steam Coming Soon, demo, trailer, screenshot, and Next Fest readiness checklist.
-
-## Project Structure
-
-- `src/main.ts`: Phaser bootstrap only
-- `src/scenes/`: menu/settings scene and shooter gameplay scene
-- `src/game/`: shared config, types, settings, scoring, localization, audio, and rendering helpers
-- `src/data/`: difficulty, enemy, and stage definitions
-- `src/systems/`: reusable gameplay presentation systems such as visual effects
+- 플레이어 HP 3, 보스 HP 100
+- 검 횟수 5개, 2초마다 1개 회복
+- MISS/BLOCK은 검 횟수 1개 소비
+- PARRY/PERFECT는 검 횟수 소비 없음
+- PARRY 반사탄, PERFECT 참격파와 라인 탄 삭제
+- 약한 화면 흔들림, 슬로우 모션, 퍼펙트 암전/검광 연출
+- 레벨 1 보스 4페이즈 패턴
