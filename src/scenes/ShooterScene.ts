@@ -1,1558 +1,1080 @@
 import Phaser from 'phaser'
-import { DIFFICULTIES } from '../data/difficulties'
-import { ENEMY_ARCHETYPES } from '../data/enemies'
-import { DEMO_STAGE } from '../data/demoStage'
-import { playTone } from '../game/audio'
-import {
-  DEBUG_HITBOXES,
-  GAME_HEIGHT,
-  GAME_WIDTH,
-  MAX_BOMBS,
-  MAX_WEAPON_LEVEL,
-  MONO_FONT,
-  PLAYER_BOMB_INVULNERABLE_MS,
-  PLAYER_BULLET_SPEED,
-  PLAYER_FIRE_MS,
-  PLAYER_GRAZE_RADIUS,
-  PLAYER_HIT_INVULNERABLE_MS,
-  PLAYER_JET_KEY,
-  PLAYER_SLOW_SPEED,
-  PLAYER_SPEED,
-  POWER_UP_DRIFT_SPEED,
-  POWER_UP_LIFETIME_MS,
-  POWER_UP_SPEED,
-  POWER_UP_TURN_MS,
-  UI_FONT,
-} from '../game/config'
-import { text } from '../game/localization'
-import { formatScore, loadBestScore, saveBestScore } from '../game/score'
-import { addStarfield, createPlayerShip, preloadPlayerJet } from '../game/sceneAssets'
-import { DEFAULT_SETTINGS, cloneSettings, keyNameToCode, loadSettings } from '../game/settings'
-import type {
-  ArcadeOverlapObject,
-  Boss,
-  BulletPattern,
-  ClearBonusBreakdown,
-  Enemy,
-  EnemyBullet,
-  GameMode,
-  PhysicsEllipse,
-  PhysicsImage,
-  PhysicsRectangle,
-  PlayerBullet,
-  PowerUp,
-  ShooterSceneData,
-  StageEnemyEvent,
-} from '../game/types'
-import { createBurst, createGrazeSpark, flashScreen, shakeCamera } from '../systems/effects'
+import { GAME_HEIGHT, GAME_WIDTH, MONO_FONT, UI_FONT } from '../game/config'
+
+type Lane = 0 | 1 | 2
+type BattleState = 'intro' | 'playing' | 'victory' | 'defeat'
+type BulletKind = 'normal' | 'heavy'
+type CounterKind = 'reflect' | 'wave'
+type SlashGrade = 'MISS' | 'BLOCK' | 'PARRY' | 'PERFECT'
+type Phase = 1 | 2 | 3 | 4
+
+interface EnemyBullet {
+  id: number
+  lane: Lane
+  y: number
+  speed: number
+  radius: number
+  kind: BulletKind
+  sprite: Phaser.GameObjects.Container
+}
+
+interface CounterShot {
+  id: number
+  lane: Lane
+  x: number
+  y: number
+  speed: number
+  radius: number
+  damage: number
+  kind: CounterKind
+  sprite: Phaser.GameObjects.Container
+}
+
+interface QueuedAttack {
+  dueAt: number
+  lane: Lane
+  kind: BulletKind
+}
+
+const LANES = [128, 240, 352] as const
+const BOSS_X = GAME_WIDTH / 2
+const BOSS_Y = 118
+const BULLET_START_Y = 188
+const PLAYER_Y = 590
+const HIT_Y = PLAYER_Y - 62
+const MAX_BOSS_HP = 100
+const MAX_PLAYER_HP = 3
+const MAX_SWORDS = 5
+const SWORD_RECOVER_MS = 2_000
+const INTRO_MS = 3_000
+const PERFECT_WINDOW_SEC = 0.08
+const PARRY_WINDOW_SEC = 0.12
+const BLOCK_WINDOW_SEC = 0.35
+const LATE_BLOCK_WINDOW_SEC = -0.12
+const BOSS_BAR_WIDTH = 330
+const NORMAL_BULLET_SPEED = 166
+const HEAVY_BULLET_SPEED = 116
+const PLAYER_SPRITE_SCALE = 1.85
+
+const PHASE_NAMES: Record<Phase, string> = {
+  1: '단발 시험',
+  2: '연속 검기',
+  3: '삼연참',
+  4: '강탄 패링',
+}
+
+const PHASE_COLORS: Record<Phase, number> = {
+  1: 0x93c5fd,
+  2: 0xfacc15,
+  3: 0xfb7185,
+  4: 0xf97316,
+}
 
 export class ShooterScene extends Phaser.Scene {
-  private settings = cloneSettings(DEFAULT_SETTINGS)
-  private mode: GameMode = 'demo'
-  private stage = DEMO_STAGE
-  private difficulty = DIFFICULTIES.novice
-  private player!: PhysicsImage
-  private cursors!: Phaser.Types.Input.Keyboard.CursorKeys
-  private fireKey!: Phaser.Input.Keyboard.Key
-  private slowKey!: Phaser.Input.Keyboard.Key
-  private bombKey!: Phaser.Input.Keyboard.Key
-  private wasdKeys!: Record<'up' | 'down' | 'left' | 'right', Phaser.Input.Keyboard.Key>
-  private scoreText!: Phaser.GameObjects.Text
-  private bestText!: Phaser.GameObjects.Text
-  private chainText!: Phaser.GameObjects.Text
-  private grazeText!: Phaser.GameObjects.Text
-  private lifeIcons: Phaser.GameObjects.Image[] = []
-  private bombIcons: Phaser.GameObjects.Rectangle[] = []
-  private statusText!: Phaser.GameObjects.Text
-  private bossBarFrame!: Phaser.GameObjects.Rectangle
+  private keys!: {
+    left: Phaser.Input.Keyboard.Key
+    right: Phaser.Input.Keyboard.Key
+    a: Phaser.Input.Keyboard.Key
+    d: Phaser.Input.Keyboard.Key
+    slash: Phaser.Input.Keyboard.Key
+    altSlash: Phaser.Input.Keyboard.Key
+  }
+
+  private player!: Phaser.GameObjects.Image
+  private playerShadow!: Phaser.GameObjects.Ellipse
+  private boss!: Phaser.GameObjects.Image
+  private bossShadow!: Phaser.GameObjects.Ellipse
   private bossBarFill!: Phaser.GameObjects.Rectangle
-  private bossNameText!: Phaser.GameObjects.Text
-  private weaponText!: Phaser.GameObjects.Text
-  private hitboxCore!: Phaser.GameObjects.Ellipse
-  private hitboxRing!: Phaser.GameObjects.Ellipse
-  private resultPanel?: Phaser.GameObjects.Container
-  private pauseMenu?: Phaser.GameObjects.Container
-  private playerBulletsGroup!: Phaser.Physics.Arcade.Group
-  private powerUpsGroup!: Phaser.Physics.Arcade.Group
-  private enemyBulletsGroup!: Phaser.Physics.Arcade.Group
-  private enemiesGroup!: Phaser.Physics.Arcade.Group
-  private bossGroup!: Phaser.Physics.Arcade.Group
-  private bullets: PlayerBullet[] = []
-  private powerUps: PowerUp[] = []
+  private phaseText!: Phaser.GameObjects.Text
+  private feedbackText!: Phaser.GameObjects.Text
+  private timerText!: Phaser.GameObjects.Text
+  private swordPips: Phaser.GameObjects.Rectangle[] = []
+  private hpMarks: Phaser.GameObjects.Rectangle[] = []
   private enemyBullets: EnemyBullet[] = []
-  private enemies: Enemy[] = []
-  private boss?: Boss
-  private score = 0
-  private displayedBestScore = 0
-  private lives = 0
-  private bombs = MAX_BOMBS
-  private weaponLevel = 1
-  private nextStageEventIndex = 0
-  private stageStartedAt = 0
+  private counterShots: CounterShot[] = []
+  private queuedAttacks: QueuedAttack[] = []
+  private audioContext?: AudioContext
+  private audioUnlocked = false
+  private state: BattleState = 'intro'
+  private playerLane: Lane = 1
+  private bossHp = MAX_BOSS_HP
+  private playerHp = MAX_PLAYER_HP
+  private swords = MAX_SWORDS
+  private swordRecoverMs = 0
+  private nextId = 1
+  private realTimeMs = 0
+  private battleClockMs = 0
+  private nextAttackAt = INTRO_MS + 450
+  private patternStep = 0
+  private currentPhase: Phase = 1
   private invulnerableUntil = 0
-  private lastPlayerShot = -PLAYER_FIRE_MS
-  private statusMessageUntil = 0
-  private isGameOver = false
-  private isStageClear = false
-  private isPaused = false
-  private chain = 0
-  private maxChain = 0
-  private multiplier = 1
-  private lastChainAt = 0
-  private grazeCount = 0
-  private noMissRun = true
-  private noBombRun = true
-  private clearTimeMs = 0
+  private slowMoUntil = 0
+  private slowMoScale = 1
 
   constructor() {
     super('ShooterScene')
   }
 
-  init(data: ShooterSceneData) {
-    this.settings = data.settings ? cloneSettings(data.settings) : loadSettings()
-    this.mode = data.mode ?? 'demo'
-    this.difficulty = DIFFICULTIES[this.settings.difficulty]
-  }
-
-  preload() {
-    preloadPlayerJet(this)
-  }
-
   create() {
-    this.resetGameState()
-    addStarfield(this, this.stage.starCount)
-
-    this.player = createPlayerShip(this, GAME_WIDTH / 2, GAME_HEIGHT - 74, 76) as PhysicsImage
-    this.createPhysicsBodies()
-    this.createInput()
+    this.tweens.killAll()
+    this.children.removeAll(true)
+    this.resetState()
+    this.createSpriteTextures()
+    this.createBackdrop()
+    this.createActors()
     this.createHud()
-    this.createBossUi()
-    this.createHitboxDisplay()
-    this.registerPhysicsOverlaps()
-
-    this.statusText.setText(
-      this.mode === 'practice'
-        ? text({ ko: '보스 연습 시작', en: 'Boss practice start' }, this.settings.language)
-        : text({ ko: '데모 런 시작', en: 'Demo run start' }, this.settings.language),
-    )
+    this.createInput()
+    this.showFeedback('가면 무사의 시험', 0xf8fafc)
   }
 
-  update(time: number, delta: number) {
-    if (this.stageStartedAt === 0) {
-      this.stageStartedAt = this.mode === 'practice' ? time - this.stage.bossAppearMs : time
-      if (this.mode === 'practice') {
-        this.nextStageEventIndex = this.stage.events.length
-      }
+  update(_time: number, delta: number) {
+    this.realTimeMs += delta
+    this.handleInput()
+
+    const timeScale = this.realTimeMs < this.slowMoUntil ? this.slowMoScale : 1
+    if (this.realTimeMs >= this.slowMoUntil) {
+      this.slowMoScale = 1
     }
 
-    if (this.isPaused) {
+    const scaledDelta = delta * timeScale
+    const dt = scaledDelta / 1000
+    this.battleClockMs += scaledDelta
+    this.updateTimer()
+
+    if (this.state === 'intro') {
+      this.boss.y = BOSS_Y - 28 + Phaser.Math.Easing.Cubic.Out(Math.min(this.battleClockMs / INTRO_MS, 1)) * 28
+      this.bossShadow.setAlpha(Math.min(this.battleClockMs / INTRO_MS, 1) * 0.3)
+
+      if (this.battleClockMs >= INTRO_MS) {
+        this.state = 'playing'
+        this.showFeedback('검을 맞춰 받아쳐라', 0xfacc15)
+      }
+
       return
     }
 
-    if (this.isGameOver || this.isStageClear) {
-      if (Phaser.Input.Keyboard.JustDown(this.fireKey)) {
-        this.scene.restart({ settings: this.settings, mode: this.mode } satisfies ShooterSceneData)
-      }
-
-      if (Phaser.Input.Keyboard.JustDown(this.bombKey)) {
-        this.scene.start('IntroScene')
-      }
-
+    if (this.state !== 'playing') {
+      this.updateCounterShots(dt)
       return
     }
 
-    const dt = delta / 1000
-    const elapsedMs = time - this.stageStartedAt
+    this.recoverSwords(delta)
+    this.updatePhase()
+    this.processQueuedAttacks()
+    this.runBossPattern()
+    this.updateEnemyBullets(dt)
+    this.updateCounterShots(dt)
+    this.updateHud()
+  }
 
-    this.updatePlayer()
-    this.updateHitboxDisplay(time)
-
-    if (this.fireKey.isDown && time - this.lastPlayerShot >= PLAYER_FIRE_MS) {
-      this.fireBullet()
-      this.lastPlayerShot = time
-    }
-
-    if (Phaser.Input.Keyboard.JustDown(this.bombKey)) {
-      this.useBomb(time)
-    }
-
-    this.spawnStageEnemies(elapsedMs)
-    this.maybeSpawnBoss(elapsedMs)
-    this.updateStatus(time, elapsedMs)
-    this.updateChain(time)
-    this.updateBullets()
-    this.updatePowerUps()
-    this.updateEnemyBullets()
-    this.updateEnemies(elapsedMs, dt)
-    this.updateBoss(elapsedMs)
+  private resetState() {
+    this.state = 'intro'
+    this.playerLane = 1
+    this.bossHp = MAX_BOSS_HP
+    this.playerHp = MAX_PLAYER_HP
+    this.swords = MAX_SWORDS
+    this.swordRecoverMs = 0
+    this.nextId = 1
+    this.realTimeMs = 0
+    this.battleClockMs = 0
+    this.nextAttackAt = INTRO_MS + 450
+    this.patternStep = 0
+    this.currentPhase = 1
+    this.invulnerableUntil = 0
+    this.slowMoUntil = 0
+    this.slowMoScale = 1
+    this.enemyBullets = []
+    this.counterShots = []
+    this.queuedAttacks = []
+    this.swordPips = []
+    this.hpMarks = []
+    this.audioUnlocked = false
   }
 
   private createInput() {
     const keyboard = this.input.keyboard
     if (!keyboard) {
-      throw new Error('Keyboard input is not available.')
+      throw new Error('Keyboard input is required for Samurai Parry.')
     }
 
-    this.cursors = keyboard.createCursorKeys()
-    this.fireKey = keyboard.addKey(keyNameToCode(this.settings.controls.fire))
-    this.slowKey = keyboard.addKey(keyNameToCode(this.settings.controls.slow))
-    this.bombKey = keyboard.addKey(keyNameToCode(this.settings.controls.bomb))
-    keyboard.on('keydown-ESC', this.onEscapeDown, this)
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.shutdownInput, this)
-    this.wasdKeys = {
-      up: keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.W),
-      down: keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.S),
-      left: keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.A),
-      right: keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.D),
+    this.keys = {
+      left: keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.LEFT),
+      right: keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.RIGHT),
+      a: keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.A),
+      d: keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.D),
+      slash: keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE),
+      altSlash: keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.J),
     }
   }
 
-  private createHud() {
-    this.add.text(20, 16, text(this.stage.title, this.settings.language), {
-      color: '#bae6fd',
-      fontFamily: MONO_FONT,
-      fontSize: '15px',
-    })
-
-    this.scoreText = this.add.text(20, 40, 'SCORE 0', {
-      color: '#e5e7eb',
-      fontFamily: MONO_FONT,
-      fontSize: '17px',
-    })
-
-    this.displayedBestScore = loadBestScore(this.settings, this.mode)
-    this.bestText = this.add.text(20, 62, `BEST ${formatScore(this.displayedBestScore)}`, {
-      color: '#c4b5fd',
-      fontFamily: MONO_FONT,
-      fontSize: '14px',
-    })
-
-    this.weaponText = this.add.text(20, 82, 'WEAPON Lv.1', {
-      color: '#fde68a',
-      fontFamily: MONO_FONT,
-      fontSize: '14px',
-    })
-
-    this.chainText = this.add
-      .text(GAME_WIDTH - 20, 42, 'x1.00  CHAIN 0', {
-        color: '#bbf7d0',
-        fontFamily: MONO_FONT,
-        fontSize: '14px',
-      })
-      .setOrigin(1, 0)
-
-    this.grazeText = this.add
-      .text(GAME_WIDTH - 20, 62, 'GRAZE 0', {
-        color: '#a7f3d0',
-        fontFamily: MONO_FONT,
-        fontSize: '14px',
-      })
-      .setOrigin(1, 0)
-
-    this.add
-      .text(GAME_WIDTH - 20, 18, text({ ko: '목숨', en: 'LIFE' }, this.settings.language), {
-        color: '#fecdd3',
-        fontFamily: MONO_FONT,
-        fontSize: '16px',
-      })
-      .setOrigin(1, 0)
-
-    this.lifeIcons = []
-    for (let index = 0; index < this.difficulty.lives; index += 1) {
-      const icon = this.add.image(GAME_WIDTH - 26 - index * 25, 97, PLAYER_JET_KEY)
-      icon.setDisplaySize(15, 21)
-      this.lifeIcons.push(icon)
+  private handleInput() {
+    const leftPressed = Phaser.Input.Keyboard.JustDown(this.keys.left) || Phaser.Input.Keyboard.JustDown(this.keys.a)
+    const rightPressed = Phaser.Input.Keyboard.JustDown(this.keys.right) || Phaser.Input.Keyboard.JustDown(this.keys.d)
+    const slashPressed = Phaser.Input.Keyboard.JustDown(this.keys.slash) || Phaser.Input.Keyboard.JustDown(this.keys.altSlash)
+    if (leftPressed || rightPressed || slashPressed) {
+      this.audioUnlocked = true
     }
 
-    this.bombIcons = []
-    for (let index = 0; index < MAX_BOMBS; index += 1) {
-      const icon = this.add.rectangle(GAME_WIDTH - 28 - index * 24, 126, 16, 16, 0xfde68a, 0.95)
-      icon.setAngle(45)
-      icon.setStrokeStyle(2, 0xfffbeb, 0.9)
-      this.bombIcons.push(icon)
-    }
-
-    this.statusText = this.add
-      .text(GAME_WIDTH / 2, 106, '', {
-        align: 'center',
-        color: '#93c5fd',
-        fontFamily: UI_FONT,
-        fontSize: '15px',
-      })
-      .setOrigin(0.5, 0)
-
-    this.updateLivesDisplay()
-    this.updateBombDisplay()
-    this.updateScoreDisplay()
-  }
-
-  private createPhysicsBodies() {
-    this.physics.world.setBounds(0, 0, GAME_WIDTH, GAME_HEIGHT)
-    this.physics.add.existing(this.player)
-    this.player.body.setAllowGravity(false)
-    this.player.body.setSize(16, 16, true)
-
-    const groupDefaults: Phaser.Types.Physics.Arcade.PhysicsGroupConfig = {
-      allowGravity: false,
-      immovable: true,
-    }
-
-    this.playerBulletsGroup = this.physics.add.group(groupDefaults)
-    this.powerUpsGroup = this.physics.add.group(groupDefaults)
-    this.enemyBulletsGroup = this.physics.add.group(groupDefaults)
-    this.enemiesGroup = this.physics.add.group(groupDefaults)
-    this.bossGroup = this.physics.add.group(groupDefaults)
-  }
-
-  private registerPhysicsOverlaps() {
-    this.physics.add.overlap(this.playerBulletsGroup, this.enemiesGroup, this.onPlayerBulletHitsEnemy, undefined, this)
-    this.physics.add.overlap(this.playerBulletsGroup, this.bossGroup, this.onPlayerBulletHitsBoss, undefined, this)
-    this.physics.add.overlap(this.player, this.powerUpsGroup, this.onPlayerCollectsPowerUp, undefined, this)
-    this.physics.add.overlap(this.player, this.enemyBulletsGroup, this.onEnemyBulletHitsPlayer, undefined, this)
-    this.physics.add.overlap(this.player, this.enemiesGroup, this.onEnemyHitsPlayer, undefined, this)
-  }
-
-  private createBossUi() {
-    this.bossBarFrame = this.add.rectangle(GAME_WIDTH / 2, 14, 260, 10, 0x020617, 0.88)
-    this.bossBarFrame.setStrokeStyle(1, 0xfda4af, 0.9)
-    this.bossBarFill = this.add.rectangle(GAME_WIDTH / 2 - 128, 14, 256, 6, 0xfb7185, 1)
-    this.bossBarFill.setOrigin(0, 0.5)
-    this.bossNameText = this.add
-      .text(GAME_WIDTH / 2, 24, text(this.stage.boss.name, this.settings.language), {
-        color: '#fecdd3',
-        fontFamily: MONO_FONT,
-        fontSize: '14px',
-      })
-      .setOrigin(0.5, 0)
-    this.setBossUiVisible(false)
-  }
-
-  private setBossUiVisible(visible: boolean) {
-    this.bossBarFrame.setVisible(visible)
-    this.bossBarFill.setVisible(visible)
-    this.bossNameText.setVisible(visible)
-  }
-
-  private createHitboxDisplay() {
-    this.hitboxRing = this.add.ellipse(this.player.x, this.player.y, PLAYER_GRAZE_RADIUS * 2, PLAYER_GRAZE_RADIUS * 2, 0x67e8f9, 0.04)
-    this.hitboxRing.setStrokeStyle(1, 0x67e8f9, 0.2)
-    this.hitboxRing.setDepth(12)
-    this.hitboxCore = this.add.ellipse(this.player.x, this.player.y, 10, 10, 0xffffff, 0.92)
-    this.hitboxCore.setStrokeStyle(2, 0x38bdf8, 1)
-    this.hitboxCore.setDepth(13)
-  }
-
-  private enableRectanglePhysics(
-    body: Phaser.GameObjects.Rectangle,
-    group: Phaser.Physics.Arcade.Group,
-    width: number,
-    height: number,
-    directControl = false,
-  ) {
-    const physicsBody = this.physics.add.existing(body) as PhysicsRectangle
-    physicsBody.body.setAllowGravity(false)
-    physicsBody.body.setImmovable(true)
-    physicsBody.body.setSize(width, height, true)
-    physicsBody.body.setDirectControl(directControl)
-    group.add(physicsBody)
-    return physicsBody
-  }
-
-  private enableEllipsePhysics(body: Phaser.GameObjects.Ellipse, group: Phaser.Physics.Arcade.Group, radius: number) {
-    const physicsBody = this.physics.add.existing(body) as PhysicsEllipse
-    physicsBody.body.setAllowGravity(false)
-    physicsBody.body.setImmovable(true)
-    physicsBody.body.setCircle(radius)
-    group.add(physicsBody)
-    return physicsBody
-  }
-
-  private getPhysicsGameObject(object: ArcadeOverlapObject) {
-    if ('body' in object) {
-      return object
-    }
-
-    return (object as Phaser.Physics.Arcade.Body | Phaser.Physics.Arcade.StaticBody).gameObject
-  }
-
-  private resetGameState() {
-    this.bullets = []
-    this.powerUps = []
-    this.enemyBullets = []
-    this.enemies = []
-    this.lifeIcons = []
-    this.bombIcons = []
-    this.boss = undefined
-    this.resultPanel = undefined
-    this.score = 0
-    this.displayedBestScore = 0
-    this.lives = this.difficulty.lives
-    this.bombs = MAX_BOMBS
-    this.weaponLevel = 1
-    this.nextStageEventIndex = 0
-    this.stageStartedAt = 0
-    this.invulnerableUntil = 0
-    this.lastPlayerShot = -PLAYER_FIRE_MS
-    this.statusMessageUntil = 0
-    this.isGameOver = false
-    this.isStageClear = false
-    this.chain = 0
-    this.maxChain = 0
-    this.multiplier = 1
-    this.lastChainAt = 0
-    this.grazeCount = 0
-    this.noMissRun = true
-    this.noBombRun = true
-    this.clearTimeMs = 0
-    this.isPaused = false
-    this.pauseMenu = undefined
-  }
-
-  private shutdownInput() {
-    this.input.keyboard?.off('keydown-ESC', this.onEscapeDown, this)
-  }
-
-  private onEscapeDown(event: KeyboardEvent) {
-    event.preventDefault()
-
-    if (this.isGameOver || this.isStageClear) {
-      return
-    }
-
-    if (this.isPaused) {
-      this.resumeGame()
-      return
-    }
-
-    this.pauseGame()
-  }
-
-  private pauseGame() {
-    if (this.isPaused) {
-      return
-    }
-
-    this.isPaused = true
-    this.player.body.setVelocity(0, 0)
-    this.physics.world.pause()
-    this.time.paused = true
-    this.tweens.pauseAll()
-    this.showPauseMenu()
-    playTone(this.settings, 360, 90, 'triangle', 0.14)
-  }
-
-  private resumeGame(playSound = true) {
-    if (!this.isPaused) {
-      return
-    }
-
-    this.pauseMenu?.destroy()
-    this.pauseMenu = undefined
-    this.isPaused = false
-    this.time.paused = false
-    this.physics.world.resume()
-    this.tweens.resumeAll()
-
-    if (playSound) {
-      playTone(this.settings, 620, 80, 'triangle', 0.13)
-    }
-  }
-
-  private showPauseMenu() {
-    this.pauseMenu?.destroy()
-
-    const menu = this.add.container(GAME_WIDTH / 2, GAME_HEIGHT / 2)
-    menu.setDepth(60)
-
-    const scrim = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x020617, 0.62)
-    scrim.setOrigin(0.5)
-    scrim.setInteractive()
-
-    const panel = this.add.rectangle(0, 0, 332, 292, 0x0f172a, 0.96)
-    panel.setStrokeStyle(2, 0x67e8f9, 0.94)
-
-    const title = this.add
-      .text(0, -112, text({ ko: '일시정지', en: 'Paused' }, this.settings.language), {
-        color: '#f8fafc',
-        fontFamily: UI_FONT,
-        fontSize: '30px',
-        fontStyle: '900',
-      })
-      .setOrigin(0.5)
-
-    const hint = this.add
-      .text(0, -76, text({ ko: 'ESC를 다시 누르면 계속합니다', en: 'Press ESC again to resume' }, this.settings.language), {
-        color: '#bae6fd',
-        fontFamily: UI_FONT,
-        fontSize: '14px',
-      })
-      .setOrigin(0.5)
-
-    menu.add([scrim, panel, title, hint])
-    this.createPauseButton(menu, -32, text({ ko: '계속하기', en: 'Resume' }, this.settings.language), () => {
-      this.resumeGame()
-    })
-    this.createPauseButton(menu, 28, text({ ko: '다시 시작', en: 'Restart' }, this.settings.language), () => {
-      this.resumeGame(false)
-      this.scene.restart({ settings: this.settings, mode: this.mode } satisfies ShooterSceneData)
-    })
-    this.createPauseButton(menu, 88, text({ ko: '메인 메뉴', en: 'Main Menu' }, this.settings.language), () => {
-      this.resumeGame(false)
-      this.scene.start('IntroScene')
-    })
-
-    this.pauseMenu = menu
-  }
-
-  private createPauseButton(
-    menu: Phaser.GameObjects.Container,
-    y: number,
-    label: string,
-    onClick: () => void,
-  ) {
-    const button = this.add.rectangle(0, y, 246, 44, 0x111827, 0.98)
-    button.setStrokeStyle(2, 0x334155, 0.95)
-    button.setInteractive({ useHandCursor: true })
-    const textLabel = this.add
-      .text(0, y, label, {
-        color: '#f8fafc',
-        fontFamily: UI_FONT,
-        fontSize: '18px',
-        fontStyle: '800',
-      })
-      .setOrigin(0.5)
-
-    button.on('pointerover', () => {
-      button.setFillStyle(0x164e63, 0.98)
-      button.setStrokeStyle(2, 0x67e8f9, 1)
-    })
-    button.on('pointerout', () => {
-      button.setFillStyle(0x111827, 0.98)
-      button.setStrokeStyle(2, 0x334155, 0.95)
-    })
-    button.on('pointerdown', () => {
-      playTone(this.settings, 520, 70, 'triangle', 0.12)
-      onClick()
-    })
-
-    menu.add([button, textLabel])
-  }
-
-  private updatePlayer() {
-    const clampedX = Phaser.Math.Clamp(this.player.x, 28, GAME_WIDTH - 28)
-    const clampedY = Phaser.Math.Clamp(this.player.y, 128, GAME_HEIGHT - 30)
-    if (clampedX !== this.player.x || clampedY !== this.player.y) {
-      this.player.body.reset(clampedX, clampedY)
-    }
-
-    let dx = 0
-    let dy = 0
-
-    if (this.cursors.left.isDown || this.wasdKeys.left.isDown) {
-      dx -= 1
-    }
-
-    if (this.cursors.right.isDown || this.wasdKeys.right.isDown) {
-      dx += 1
-    }
-
-    if (this.cursors.up.isDown || this.wasdKeys.up.isDown) {
-      dy -= 1
-    }
-
-    if (this.cursors.down.isDown || this.wasdKeys.down.isDown) {
-      dy += 1
-    }
-
-    const length = Math.hypot(dx, dy) || 1
-    const speed = this.slowKey.isDown ? PLAYER_SLOW_SPEED : PLAYER_SPEED
-    const vx = (dx / length) * speed
-    const vy = (dy / length) * speed
-
-    this.player.body.setVelocity(
-      (this.player.x <= 28 && vx < 0) || (this.player.x >= GAME_WIDTH - 28 && vx > 0) ? 0 : vx,
-      (this.player.y <= 128 && vy < 0) || (this.player.y >= GAME_HEIGHT - 30 && vy > 0) ? 0 : vy,
-    )
-  }
-
-  private updateHitboxDisplay(time: number) {
-    const shouldShow = this.settings.showHitbox || this.slowKey.isDown || time < this.invulnerableUntil
-    this.hitboxRing.setPosition(this.player.x, this.player.y)
-    this.hitboxCore.setPosition(this.player.x, this.player.y)
-    this.hitboxRing.setVisible(shouldShow)
-    this.hitboxCore.setVisible(shouldShow)
-    this.hitboxRing.setAlpha(this.slowKey.isDown ? 0.2 : 0.08)
-  }
-
-  private fireBullet() {
-    if (this.weaponLevel === 1) {
-      this.createPlayerBullet(this.player.x, this.player.y - 42, -Math.PI / 2)
-      playTone(this.settings, 720, 35, 'square', 0.035)
-      return
-    }
-
-    if (this.weaponLevel === 2) {
-      this.createPlayerBullet(this.player.x - 10, this.player.y - 42, -Math.PI / 2)
-      this.createPlayerBullet(this.player.x + 10, this.player.y - 42, -Math.PI / 2)
-      playTone(this.settings, 790, 35, 'square', 0.035)
-      return
-    }
-
-    this.createPlayerBullet(this.player.x - 9, this.player.y - 42, -Math.PI / 2 - 0.24)
-    this.createPlayerBullet(this.player.x, this.player.y - 46, -Math.PI / 2)
-    this.createPlayerBullet(this.player.x + 9, this.player.y - 42, -Math.PI / 2 + 0.24)
-    playTone(this.settings, 860, 35, 'square', 0.035)
-  }
-
-  private createPlayerBullet(x: number, y: number, angle: number) {
-    const body = this.enableRectanglePhysics(this.add.rectangle(x, y, 7, 24, 0xfacc15), this.playerBulletsGroup, 7, 24)
-    body.setStrokeStyle(1, 0xfef08a)
-    body.setRotation(angle + Math.PI / 2)
-    body.body.setVelocity(Math.cos(angle) * PLAYER_BULLET_SPEED, Math.sin(angle) * PLAYER_BULLET_SPEED)
-    const debug = this.createDebugRect(body.x, body.y, 7, 24, 0x22d3ee)
-    this.bullets.push({ body, debug })
-  }
-
-  private useBomb(time: number) {
-    if (this.bombs <= 0 || time < this.invulnerableUntil) {
-      return
-    }
-
-    this.bombs -= 1
-    this.noBombRun = false
-    this.invulnerableUntil = time + PLAYER_BOMB_INVULNERABLE_MS
-    this.updateBombDisplay()
-    this.statusMessageUntil = time + 1_000
-    this.statusText.setText(text({ ko: '폭탄! 탄 소거 + 긴급 무적', en: 'Bomb! Bullet cancel + invulnerability' }, this.settings.language))
-    this.statusText.setColor('#fde68a')
-    this.enemyBullets.forEach((bullet) => {
-      createBurst(this, bullet.body.x, bullet.body.y, 0xfde68a, 4)
-      this.destroyEnemyBullet(bullet)
-    })
-    this.enemyBullets = []
-
-    this.enemies.forEach((enemy) => {
-      enemy.hp -= 2
-      createBurst(this, enemy.body.x, enemy.body.y, 0xfef3c7, 5)
-      if (enemy.hp <= 0) {
-        this.addScore(enemy.archetype.score, true)
-        this.destroyEnemy(enemy)
+    if (this.state === 'victory' || this.state === 'defeat') {
+      if (slashPressed) {
+        this.scene.restart()
       }
-    })
-    this.enemies = this.enemies.filter((enemy) => enemy.hp > 0)
 
-    if (this.boss) {
-      this.boss.hp -= 24
-      this.updateBossHealthBar()
-      if (this.boss.hp <= 0) {
-        this.clearStage()
-      }
-    }
-
-    flashScreen(this, 0xfde68a, 0.18)
-    shakeCamera(this, this.settings, 180, 0.01)
-    playTone(this.settings, 130, 220, 'sawtooth', 0.22)
-  }
-
-  private spawnStageEnemies(elapsedMs: number) {
-    while (
-      this.nextStageEventIndex < this.stage.events.length &&
-      elapsedMs >= this.stage.events[this.nextStageEventIndex].timeMs
-    ) {
-      this.spawnEnemy(this.stage.events[this.nextStageEventIndex], elapsedMs)
-      this.nextStageEventIndex += 1
-    }
-  }
-
-  private maybeDropPowerUp(enemy: Enemy) {
-    if (Math.random() >= enemy.archetype.dropChance) {
       return
     }
 
-    this.spawnPowerUp(enemy.body.x, enemy.body.y)
+    if (this.state !== 'playing') {
+      return
+    }
+
+    if (leftPressed) {
+      this.movePlayer(-1)
+    }
+
+    if (rightPressed) {
+      this.movePlayer(1)
+    }
+
+    if (slashPressed) {
+      this.swingSword()
+    }
   }
 
-  private spawnPowerUp(x: number, y: number) {
-    const glow = this.add.ellipse(x, y, 18, 18, 0x38bdf8, 0.18)
-    const body = this.enableRectanglePhysics(this.add.rectangle(x, y, 11, 11, 0xfacc15, 0.95), this.powerUpsGroup, 14, 14)
-    body.setAngle(45)
-    body.setStrokeStyle(2, 0xfef08a, 0.95)
-    const driftDirection = Math.random() < 0.5 ? -1 : 1
-    body.body.setVelocity(driftDirection * POWER_UP_DRIFT_SPEED, POWER_UP_SPEED)
-    const debug = this.createDebugRect(body.x, body.y, 14, 14, 0xfef08a)
+  private movePlayer(direction: -1 | 1) {
+    const nextLane = Phaser.Math.Clamp(this.playerLane + direction, 0, 2) as Lane
+    if (nextLane === this.playerLane) {
+      return
+    }
 
+    this.playerLane = nextLane
+    this.tweens.killTweensOf([this.player, this.playerShadow])
     this.tweens.add({
-      targets: [body, glow],
-      scale: 1.18,
-      duration: 520,
-      ease: 'Sine.easeInOut',
-      repeat: -1,
-      yoyo: true,
+      targets: [this.player, this.playerShadow],
+      x: LANES[this.playerLane],
+      duration: 115,
+      ease: 'Quad.easeOut',
     })
-
-    this.powerUps.push({
-      body,
-      glow,
-      spawnedAt: this.time.now,
-      nextTurnAt: this.time.now + POWER_UP_TURN_MS,
-      driftDirection,
-      debug,
-    })
+    this.playTone(330, 45, 'triangle', 0.035)
   }
 
-  private spawnEnemy(event: StageEnemyEvent, elapsedMs: number) {
-    const archetype = ENEMY_ARCHETYPES[event.enemy]
-    const body = this.enableRectanglePhysics(
-      this.add.rectangle(event.x, -28, archetype.width, archetype.height, archetype.fill),
-      this.enemiesGroup,
-      archetype.width,
-      archetype.height,
-      true,
-    )
-    body.setStrokeStyle(2, archetype.stroke)
-    const debug = this.createDebugRect(body.x, body.y, body.width, body.height, 0x4ade80)
-
-    this.enemies.push({
-      body,
-      debug,
-      archetype,
-      movement: event.movement,
-      spawnElapsedMs: elapsedMs,
-      startX: event.x,
-      targetY: event.targetY ?? 146,
-      hp: Math.max(1, Math.ceil(archetype.hp * this.difficulty.enemyHpScale)),
-      firedShots: new Set<string>(),
-    })
-  }
-
-  private maybeSpawnBoss(elapsedMs: number) {
-    if (this.boss || elapsedMs < this.stage.bossAppearMs) {
+  private swingSword() {
+    if (this.swords <= 0) {
+      this.showFeedback('검 기력 없음', 0x94a3b8)
+      this.flashSwordPips(0x94a3b8)
+      this.playTone(110, 90, 'square', 0.025)
       return
     }
 
-    const maxHp = Math.round(this.stage.boss.maxHp * this.difficulty.bossHpScale)
-    const body = this.enableRectanglePhysics(
-      this.add.rectangle(GAME_WIDTH / 2, 90, 132, 86, this.stage.boss.phaseOneFill, 0.94),
-      this.bossGroup,
-      132,
-      86,
-      true,
-    )
-    body.setStrokeStyle(3, 0xf0abfc)
-    const core = this.add.ellipse(GAME_WIDTH / 2, 96, 36, 42, 0xfda4af, 0.95)
-    core.setStrokeStyle(2, 0xffedd5)
-    const debug = this.createDebugRect(body.x, body.y, body.width, body.height, 0xf472b6)
+    const candidate = this.findSlashCandidate()
+    const grade = candidate ? this.judgeSlash(candidate.timeToImpact) : 'MISS'
+    this.showSwordAnimation(grade)
 
-    this.boss = {
-      body,
-      core,
-      debug,
-      hp: maxHp,
-      maxHp,
-      phase: 1,
-      spawnElapsedMs: elapsedMs,
-      lastRingMs: -1_600,
-      lastFanMs: -1_000,
-      lastAimedMs: -600,
-      lastSpiralMs: -900,
+    if (!candidate || grade === 'MISS') {
+      this.spendSword()
+      this.showFeedback('MISS', 0x94a3b8)
+      this.playTone(140, 70, 'sawtooth', 0.03)
+      return
     }
 
-    this.setBossUiVisible(true)
-    this.statusText.setText(text({ ko: '보스 출현', en: 'Boss incoming' }, this.settings.language))
-    this.statusText.setColor('#fecdd3')
-    flashScreen(this, 0xf0abfc, 0.13)
-    playTone(this.settings, 220, 220, 'sawtooth', 0.2)
+    if (grade === 'BLOCK') {
+      this.blockBullet(candidate.bullet)
+      return
+    }
+
+    if (grade === 'PARRY') {
+      this.parryBullet(candidate.bullet)
+      return
+    }
+
+    this.perfectParry(candidate.bullet)
   }
 
-  private updateBullets() {
-    this.bullets = this.bullets.filter((bullet) => {
-      this.syncDebugRect(bullet.debug, bullet.body)
+  private findSlashCandidate() {
+    const candidates = this.enemyBullets
+      .filter((bullet) => bullet.lane === this.playerLane)
+      .map((bullet) => ({
+        bullet,
+        timeToImpact: (HIT_Y - bullet.y) / bullet.speed,
+      }))
+      .filter(({ timeToImpact }) => timeToImpact >= LATE_BLOCK_WINDOW_SEC && timeToImpact <= BLOCK_WINDOW_SEC)
+      .sort((left, right) => Math.abs(left.timeToImpact) - Math.abs(right.timeToImpact))
 
-      if (
-        bullet.body.x < -40 ||
-        bullet.body.x > GAME_WIDTH + 40 ||
-        bullet.body.y < -40 ||
-        bullet.body.y > GAME_HEIGHT + 40
-      ) {
-        this.destroyPlayerBullet(bullet)
-        return false
+    return candidates[0]
+  }
+
+  private judgeSlash(timeToImpact: number): SlashGrade {
+    const distance = Math.abs(timeToImpact)
+    if (distance <= PERFECT_WINDOW_SEC) {
+      return 'PERFECT'
+    }
+
+    if (distance <= PARRY_WINDOW_SEC) {
+      return 'PARRY'
+    }
+
+    return 'BLOCK'
+  }
+
+  private spendSword() {
+    this.swords = Math.max(0, this.swords - 1)
+    this.swordRecoverMs = 0
+    this.updateHud()
+    this.flashSwordPips(0xef4444)
+  }
+
+  private blockBullet(bullet: EnemyBullet) {
+    this.spendSword()
+    this.removeEnemyBullet(bullet)
+    this.burst(LANES[bullet.lane], bullet.y, 0xe2e8f0, 9)
+    this.showFeedback('BLOCK', 0xdbeafe)
+    this.cameras.main.shake(90, 0.0025)
+    this.playTone(260, 90, 'triangle', 0.045)
+  }
+
+  private parryBullet(bullet: EnemyBullet) {
+    const damage = bullet.kind === 'heavy' ? 6 : 3
+    this.removeEnemyBullet(bullet)
+    this.createCounterShot(bullet.lane, bullet.y, damage, 'reflect')
+    this.burst(LANES[bullet.lane], bullet.y, 0xfef3c7, 13)
+    this.showFeedback('PARRY', 0xfacc15)
+    this.triggerSlowMo(0.34, 135)
+    this.cameras.main.shake(130, 0.004)
+    this.playTone(620, 95, 'triangle', 0.055)
+  }
+
+  private perfectParry(bullet: EnemyBullet) {
+    const damage = bullet.kind === 'heavy' ? 15 : 8
+    const lane = bullet.lane
+    const bulletsInLane = this.enemyBullets.filter((item) => item.lane === lane)
+    bulletsInLane.forEach((item) => this.removeEnemyBullet(item))
+    this.createCounterShot(lane, HIT_Y, damage, 'wave')
+    this.burst(LANES[lane], HIT_Y, 0xffffff, 22)
+    this.darkSlashFlash()
+    this.showFeedback('PERFECT', 0xffffff)
+    this.triggerSlowMo(0.18, 260)
+    this.cameras.main.shake(230, 0.008)
+    this.playTone(880, 140, 'triangle', 0.065)
+  }
+
+  private showSwordAnimation(grade: SlashGrade) {
+    const isPerfect = grade === 'PERFECT'
+    const color = isPerfect ? 0xffffff : grade === 'PARRY' ? 0xfacc15 : grade === 'BLOCK' ? 0xdbeafe : 0x94a3b8
+    const x = LANES[this.playerLane]
+    const y = HIT_Y + 4
+
+    this.player.setTexture('samurai-slash')
+    this.player.setFlipX(this.playerLane === 0)
+    this.time.delayedCall(150, () => {
+      if (this.player.active) {
+        this.player.setTexture('samurai-idle')
+        this.player.setFlipX(false)
       }
-
-      return true
     })
-  }
 
-  private updatePowerUps() {
-    this.powerUps = this.powerUps.filter((powerUp) => {
-      const ageMs = this.time.now - powerUp.spawnedAt
-      const shouldTurnByTime = this.time.now >= powerUp.nextTurnAt
-      const shouldTurnByBounds =
-        (powerUp.body.x <= 18 && powerUp.driftDirection < 0) ||
-        (powerUp.body.x >= GAME_WIDTH - 18 && powerUp.driftDirection > 0)
-
-      if (shouldTurnByTime || shouldTurnByBounds) {
-        powerUp.driftDirection = powerUp.driftDirection === 1 ? -1 : 1
-        powerUp.nextTurnAt = this.time.now + POWER_UP_TURN_MS
-        powerUp.body.body.setVelocity(powerUp.driftDirection * POWER_UP_DRIFT_SPEED, POWER_UP_SPEED)
-      }
-
-      powerUp.glow.y = powerUp.body.y
-      powerUp.glow.x = powerUp.body.x
-      this.syncDebugRect(powerUp.debug, powerUp.body)
-
-      if (ageMs >= POWER_UP_LIFETIME_MS || powerUp.body.y > GAME_HEIGHT + 40) {
-        this.destroyPowerUp(powerUp)
-        return false
-      }
-
-      return true
-    })
-  }
-
-  private updateEnemyBullets() {
-    this.enemyBullets = this.enemyBullets.filter((bullet) => {
-      this.syncDebugCircle(bullet.debug, bullet.body)
-      this.checkGraze(bullet)
-
-      if (
-        bullet.body.x < -40 ||
-        bullet.body.x > GAME_WIDTH + 40 ||
-        bullet.body.y < -40 ||
-        bullet.body.y > GAME_HEIGHT + 40
-      ) {
-        this.destroyEnemyBullet(bullet)
-        return false
-      }
-
-      return true
-    })
-  }
-
-  private updateEnemies(elapsedMs: number, dt: number) {
-    this.enemies = this.enemies.filter((enemy) => {
-      const ageMs = elapsedMs - enemy.spawnElapsedMs
-      this.positionEnemy(enemy, ageMs, dt)
-      this.fireEnemyPatterns(enemy, ageMs)
-      this.syncDebugRect(enemy.debug, enemy.body)
-
-      if (this.shouldRemoveEnemy(enemy, ageMs)) {
-        this.destroyEnemy(enemy)
-        return false
-      }
-
-      return true
-    })
-  }
-
-  private positionEnemy(enemy: Enemy, ageMs: number, dt: number) {
-    const ageSeconds = ageMs / 1000
-
-    if (enemy.movement === 'formation') {
-      enemy.body.x = enemy.startX + Math.sin(ageMs / 620) * 6
-      enemy.body.y = -28 + ageSeconds * 118
-      return
-    }
-
-    if (enemy.movement === 'diagonal-left' || enemy.movement === 'diagonal-right') {
-      const direction = enemy.movement === 'diagonal-right' ? 1 : -1
-      enemy.body.x = enemy.startX + direction * ageSeconds * 96
-      enemy.body.y = -28 + ageSeconds * 134
-      return
-    }
-
-    if (enemy.movement === 'sine') {
-      enemy.body.x = enemy.startX + Math.sin(ageMs / 330) * 44
-      enemy.body.y = -28 + ageSeconds * 124
-      return
-    }
-
-    if (enemy.movement === 'hover') {
-      if (ageMs < 1_000) {
-        enemy.body.x = enemy.startX
-        enemy.body.y = Phaser.Math.Linear(-28, enemy.targetY, ageMs / 1_000)
-        return
-      }
-
-      if (ageMs < 3_200) {
-        enemy.body.x = enemy.startX + Math.sin(ageMs / 420) * 18
-        enemy.body.y = enemy.targetY + Math.sin(ageMs / 330) * 4
-        return
-      }
-
-      enemy.body.y = enemy.targetY + ((ageMs - 3_200) / 1000) * 118
-      return
-    }
-
-    if (enemy.movement === 'split-left' || enemy.movement === 'split-right') {
-      const direction = enemy.movement === 'split-right' ? 1 : -1
-      enemy.body.x = enemy.startX + direction * Math.pow(ageSeconds, 1.15) * 54
-      enemy.body.y = -28 + ageSeconds * 132
-      return
-    }
-
-    const direction = enemy.movement === 'ambush-right' ? 1 : -1
-    if (ageMs < 900) {
-      enemy.body.x = enemy.startX
-      enemy.body.y = Phaser.Math.Linear(-28, enemy.targetY, ageMs / 900)
-      return
-    }
-
-    if (ageMs < 2_800) {
-      enemy.body.x = enemy.startX + Math.sin(ageMs / 260) * 9
-      enemy.body.y = enemy.targetY + Math.sin(ageMs / 330) * 4
-      return
-    }
-
-    const exitProgress = (ageMs - 2_800) / 1_600
-    enemy.body.x = enemy.startX + direction * exitProgress * 270
-    enemy.body.y = enemy.targetY - exitProgress * 90
-    void dt
-  }
-
-  private fireEnemyPatterns(enemy: Enemy, ageMs: number) {
-    enemy.archetype.bulletPatterns.forEach((pattern, patternIndex) => {
-      pattern.shotTimes.forEach((shotTime, shotIndex) => {
-        const scaledShotTime = shotTime / this.difficulty.enemyFireRate
-        const shotKey = `${patternIndex}:${shotIndex}`
-        if (ageMs < scaledShotTime || enemy.firedShots.has(shotKey)) {
-          return
-        }
-
-        enemy.firedShots.add(shotKey)
-        this.fireBulletPattern(enemy.body.x, enemy.body.y + enemy.archetype.height / 2, pattern, ageMs)
-      })
-    })
-  }
-
-  private shouldRemoveEnemy(enemy: Enemy, ageMs: number) {
-    if (enemy.movement === 'ambush-left' || enemy.movement === 'ambush-right') {
-      return ageMs > 4_450 || enemy.body.x < -70 || enemy.body.x > GAME_WIDTH + 70
-    }
-
-    return enemy.body.y > GAME_HEIGHT + 42 || enemy.body.x < -80 || enemy.body.x > GAME_WIDTH + 80
-  }
-
-  private updateBoss(elapsedMs: number) {
-    if (!this.boss) {
-      return
-    }
-
-    const boss = this.boss
-    const ageMs = elapsedMs - boss.spawnElapsedMs
-    const phaseTwoHp = boss.maxHp * this.stage.boss.phaseTwoRatio
-    if (boss.phase === 1 && boss.hp <= phaseTwoHp) {
-      boss.phase = 2
-      boss.body.setFillStyle(this.stage.boss.phaseTwoFill, 0.96)
-      boss.body.setStrokeStyle(3, 0xfda4af)
-      boss.core.setFillStyle(0xfef08a, 0.98)
-      this.enemyBullets.forEach((bullet) => this.destroyEnemyBullet(bullet))
-      this.enemyBullets = []
-      this.statusMessageUntil = this.time.now + 1_200
-      this.statusText.setText(text({ ko: '2페이즈 돌입', en: 'Phase 2 engaged' }, this.settings.language))
-      this.statusText.setColor('#fef08a')
-      flashScreen(this, 0xf43f5e, 0.16)
-      shakeCamera(this, this.settings, 260, 0.012)
-      playTone(this.settings, 180, 260, 'sawtooth', 0.24)
-    }
-
-    const driftX = Math.sin(ageMs / (boss.phase === 1 ? 1_200 : 820)) * (boss.phase === 1 ? 120 : 142)
-    boss.body.x = GAME_WIDTH / 2 + driftX
-    boss.body.y = 90 + Math.sin(ageMs / 1_700) * 8
-    boss.core.x = boss.body.x
-    boss.core.y = boss.body.y + 4
-    this.syncDebugRect(boss.debug, boss.body)
-
-    const bossSpeed = this.difficulty.bossBulletSpeed
-    if (ageMs - boss.lastRingMs >= (boss.phase === 1 ? 1_650 : 1_180)) {
-      this.fireRing(boss.body.x, boss.body.y + 40, boss.phase === 1 ? 18 : 22, 142 * bossSpeed, ageMs / 900, 0xc4b5fd, 5)
-      boss.lastRingMs = ageMs
-    }
-
-    if (ageMs - boss.lastFanMs >= (boss.phase === 1 ? 1_050 : 780)) {
-      this.fireFan(
-        boss.body.x,
-        boss.body.y + 44,
-        Math.PI / 2,
-        boss.phase === 1 ? 7 : 9,
-        boss.phase === 1 ? 0.64 : 0.78,
-        210 * bossSpeed,
-        boss.phase === 1 ? 0xfca5a5 : 0xf9a8d4,
-        5,
-      )
-      boss.lastFanMs = ageMs
-    }
-
-    if (ageMs - boss.lastAimedMs >= (boss.phase === 1 ? 720 : 540)) {
-      this.fireAimedBullet(boss.body.x - 32, boss.body.y + 36, 235 * bossSpeed, 0x67e8f9, 4)
-      this.fireAimedBullet(boss.body.x + 32, boss.body.y + 36, 235 * bossSpeed, 0x67e8f9, 4)
-      boss.lastAimedMs = ageMs
-    }
-
-    if (boss.phase === 2 && ageMs - boss.lastSpiralMs >= 420) {
-      const rotation = ageMs / 240
-      this.fireEnemyBullet(boss.body.x, boss.body.y + 42, Math.cos(rotation) * 188 * bossSpeed, Math.sin(rotation) * 188 * bossSpeed, 0xfef08a, 5)
-      this.fireEnemyBullet(
-        boss.body.x,
-        boss.body.y + 42,
-        Math.cos(rotation + Math.PI) * 188 * bossSpeed,
-        Math.sin(rotation + Math.PI) * 188 * bossSpeed,
-        0xfef08a,
-        5,
-      )
-      boss.lastSpiralMs = ageMs
-    }
-  }
-
-  private fireBulletPattern(x: number, y: number, pattern: BulletPattern, ageMs: number) {
-    const speed = pattern.speed * this.difficulty.enemyBulletSpeed
-    const count = pattern.count ?? 1
-    const spread = pattern.spread ?? 0
-    const centerAngle = pattern.centerAngle ?? Math.PI / 2
-
-    if (pattern.kind === 'aimed') {
-      this.fireAimedBullet(x, y, speed, pattern.color, pattern.radius)
-      return
-    }
-
-    if (pattern.kind === 'fan') {
-      this.fireFan(x, y, centerAngle, count, spread, speed, pattern.color, pattern.radius)
-      return
-    }
-
-    if (pattern.kind === 'ring') {
-      this.fireRing(x, y, count, speed, ageMs / 600, pattern.color, pattern.radius)
-      return
-    }
-
-    if (pattern.kind === 'spiral') {
-      const rotation = ageMs / (pattern.rotationRate ?? 420)
-      this.fireEnemyBullet(x, y, Math.cos(rotation) * speed, Math.sin(rotation) * speed, pattern.color, pattern.radius)
-      return
-    }
-
-    const bursts = pattern.bursts ?? 2
-    const delay = pattern.burstDelayMs ?? 140
-    for (let index = 0; index < bursts; index += 1) {
-      this.time.delayedCall(index * delay, () => {
-        if (this.isGameOver || this.isStageClear) {
-          return
-        }
-
-        this.fireFan(x, y, centerAngle, count, spread + index * 0.08, speed + index * 16, pattern.color, pattern.radius)
-      })
-    }
-  }
-
-  private onPlayerBulletHitsEnemy(
-    bulletObject: ArcadeOverlapObject,
-    enemyObject: ArcadeOverlapObject,
-  ) {
-    const bulletBody = this.getPhysicsGameObject(bulletObject)
-    const enemyBody = this.getPhysicsGameObject(enemyObject)
-    const bullet = this.bullets.find((item) => item.body === bulletBody)
-    const enemy = this.enemies.find((item) => item.body === enemyBody)
-    if (!bullet || !enemy) {
-      return
-    }
-
-    this.bullets = this.bullets.filter((item) => item !== bullet)
-    this.destroyPlayerBullet(bullet)
-    enemy.hp -= 1
-
-    if (enemy.hp <= 0) {
-      const enemyX = enemy.body.x
-      const enemyY = enemy.body.y
-      this.maybeDropPowerUp(enemy)
-      this.enemies = this.enemies.filter((item) => item !== enemy)
-      this.destroyEnemy(enemy)
-      this.addScore(enemy.archetype.score, true)
-      createBurst(this, enemyX, enemyY, enemy.archetype.stroke, 8)
-      playTone(this.settings, 240, 80, 'triangle', 0.08)
-    }
-  }
-
-  private onPlayerBulletHitsBoss(bulletObject: ArcadeOverlapObject) {
-    const bulletBody = this.getPhysicsGameObject(bulletObject)
-    const bullet = this.bullets.find((item) => item.body === bulletBody)
-    if (!bullet || !this.boss) {
-      return
-    }
-
-    this.bullets = this.bullets.filter((item) => item !== bullet)
-    this.destroyPlayerBullet(bullet)
-    this.damageBoss()
-  }
-
-  private onPlayerCollectsPowerUp(
-    _playerObject: ArcadeOverlapObject,
-    powerUpObject: ArcadeOverlapObject,
-  ) {
-    const powerUpBody = this.getPhysicsGameObject(powerUpObject)
-    const powerUp = this.powerUps.find((item) => item.body === powerUpBody)
-    if (!powerUp) {
-      return
-    }
-
-    this.collectPowerUp(powerUp)
-  }
-
-  private onEnemyBulletHitsPlayer(
-    _playerObject: ArcadeOverlapObject,
-    bulletObject: ArcadeOverlapObject,
-  ) {
-    const bulletBody = this.getPhysicsGameObject(bulletObject)
-    const bullet = this.enemyBullets.find((item) => item.body === bulletBody)
-    if (!bullet) {
-      return
-    }
-
-    this.enemyBullets = this.enemyBullets.filter((item) => item !== bullet)
-    this.damagePlayer(this.time.now)
-    this.destroyEnemyBullet(bullet)
-  }
-
-  private onEnemyHitsPlayer(
-    _playerObject: ArcadeOverlapObject,
-    enemyObject: ArcadeOverlapObject,
-  ) {
-    const enemyBody = this.getPhysicsGameObject(enemyObject)
-    const enemy = this.enemies.find((item) => item.body === enemyBody)
-    if (!enemy) {
-      return
-    }
-
-    this.enemies = this.enemies.filter((item) => item !== enemy)
-    this.damagePlayer(this.time.now)
-    this.destroyEnemy(enemy)
-  }
-
-  private damageBoss() {
-    if (!this.boss) {
-      return
-    }
-
-    this.boss.hp -= 1
-    this.addScore(this.stage.score.bossHit, false)
-    this.updateBossHealthBar()
-
+    const slash = this.add.rectangle(x + 22, y - 6, isPerfect ? 118 : 72, isPerfect ? 10 : 6, color, isPerfect ? 0.96 : 0.78)
+    slash.setRotation(-0.26)
+    slash.setDepth(20)
     this.tweens.add({
-      targets: [this.boss.body, this.boss.core],
-      alpha: 0.36,
-      duration: 45,
-      repeat: 1,
-      yoyo: true,
-      onComplete: () => {
-        if (this.boss) {
-          this.boss.body.setAlpha(1)
-          this.boss.core.setAlpha(1)
-        }
-      },
+      targets: slash,
+      alpha: 0,
+      scaleX: isPerfect ? 1.35 : 1.16,
+      duration: isPerfect ? 240 : 150,
+      ease: 'Cubic.easeOut',
+      onComplete: () => slash.destroy(),
+    })
+  }
+
+  private recoverSwords(delta: number) {
+    if (this.swords >= MAX_SWORDS) {
+      this.swordRecoverMs = 0
+      return
+    }
+
+    this.swordRecoverMs += delta
+    while (this.swordRecoverMs >= SWORD_RECOVER_MS && this.swords < MAX_SWORDS) {
+      this.swordRecoverMs -= SWORD_RECOVER_MS
+      this.swords += 1
+      this.flashSwordPips(0x67e8f9)
+      this.playTone(440, 60, 'sine', 0.025)
+    }
+  }
+
+  private updatePhase() {
+    const phase = this.getPhase()
+    if (phase === this.currentPhase) {
+      return
+    }
+
+    this.currentPhase = phase
+    this.patternStep = 0
+    this.nextAttackAt = this.battleClockMs + 650
+    this.phaseText.setText(`PHASE ${phase}  ${PHASE_NAMES[phase]}`)
+    this.showFeedback(PHASE_NAMES[phase], PHASE_COLORS[phase])
+    this.cameras.main.shake(150, 0.0035)
+  }
+
+  private getPhase(): Phase {
+    if (this.bossHp <= 25) {
+      return 4
+    }
+
+    if (this.bossHp <= 50) {
+      return 3
+    }
+
+    if (this.bossHp <= 75) {
+      return 2
+    }
+
+    return 1
+  }
+
+  private runBossPattern() {
+    if (this.battleClockMs < this.nextAttackAt) {
+      return
+    }
+
+    if (this.currentPhase === 1) {
+      const sequence: Lane[] = [0, 1, 2, 1]
+      this.queueBullet(sequence[this.patternStep % sequence.length], 0, 'normal')
+      this.patternStep += 1
+      this.nextAttackAt = this.battleClockMs + 1_260
+      return
+    }
+
+    if (this.currentPhase === 2) {
+      const mainLane = ([0, 2, 1, 0, 2, 1] as Lane[])[this.patternStep % 6]
+      const sideLane = ([2, 1, 0, 1, 0, 2] as Lane[])[this.patternStep % 6]
+      this.queueBullet(mainLane, 0, 'normal')
+      this.queueBullet(mainLane, 310, 'normal')
+      this.queueBullet(sideLane, 660, 'normal')
+      this.patternStep += 1
+      this.nextAttackAt = this.battleClockMs + 1_580
+      return
+    }
+
+    if (this.currentPhase === 3) {
+      const order = this.patternStep % 2 === 0 ? ([0, 1, 2] as Lane[]) : ([2, 1, 0] as Lane[])
+      this.queueBullet(order[0], 0, 'normal')
+      this.queueBullet(order[1], 360, 'normal')
+      this.queueBullet(order[2], 720, 'normal')
+      this.patternStep += 1
+      this.nextAttackAt = this.battleClockMs + 1_520
+      return
+    }
+
+    const heavyLane = ([1, 0, 2, 1, 2, 0] as Lane[])[this.patternStep % 6]
+    const firstNormal = ((heavyLane + 1) % 3) as Lane
+    const secondNormal = ((heavyLane + 2) % 3) as Lane
+    this.queueBullet(firstNormal, 0, 'normal')
+    this.queueBullet(heavyLane, 410, 'heavy')
+    this.queueBullet(secondNormal, 880, 'normal')
+    this.patternStep += 1
+    this.nextAttackAt = this.battleClockMs + 1_720
+  }
+
+  private queueBullet(lane: Lane, delayMs: number, kind: BulletKind) {
+    this.queuedAttacks.push({
+      dueAt: this.battleClockMs + delayMs,
+      lane,
+      kind,
+    })
+  }
+
+  private processQueuedAttacks() {
+    const ready = this.queuedAttacks.filter((attack) => attack.dueAt <= this.battleClockMs)
+    this.queuedAttacks = this.queuedAttacks.filter((attack) => attack.dueAt > this.battleClockMs)
+    ready.forEach((attack) => this.spawnEnemyBullet(attack.lane, attack.kind))
+  }
+
+  private spawnEnemyBullet(lane: Lane, kind: BulletKind) {
+    const speed = kind === 'heavy' ? HEAVY_BULLET_SPEED : NORMAL_BULLET_SPEED
+    const radius = kind === 'heavy' ? 19 : 11
+    const sprite = this.createEnemyBulletSprite(LANES[lane], BULLET_START_Y, kind)
+    const bullet: EnemyBullet = {
+      id: this.nextId,
+      lane,
+      y: BULLET_START_Y,
+      speed,
+      radius,
+      kind,
+      sprite,
+    }
+    this.nextId += 1
+    this.enemyBullets.push(bullet)
+    this.flashLane(lane, kind === 'heavy' ? 0xf97316 : 0x93c5fd)
+    this.playTone(kind === 'heavy' ? 170 : 220, kind === 'heavy' ? 120 : 70, 'sine', kind === 'heavy' ? 0.035 : 0.02)
+  }
+
+  private updateEnemyBullets(dt: number) {
+    const bullets = [...this.enemyBullets]
+    for (const bullet of bullets) {
+      const previousY = bullet.y
+      bullet.y += bullet.speed * dt
+      const laneDrift = Math.sin((this.battleClockMs + bullet.id * 71) / 140) * (bullet.kind === 'heavy' ? 1.5 : 0.8)
+      bullet.sprite.setPosition(LANES[bullet.lane] + laneDrift, bullet.y)
+      bullet.sprite.setRotation(bullet.sprite.rotation + dt * (bullet.kind === 'heavy' ? 1.2 : 2.4))
+
+      if (previousY < HIT_Y && bullet.y >= HIT_Y && bullet.lane === this.playerLane) {
+        this.hitPlayer(bullet)
+        continue
+      }
+
+      if (bullet.y > GAME_HEIGHT + 42) {
+        this.removeEnemyBullet(bullet)
+      }
+    }
+  }
+
+  private createCounterShot(lane: Lane, y: number, damage: number, kind: CounterKind) {
+    const speed = kind === 'wave' ? 540 : 430
+    const radius = kind === 'wave' ? 58 : 20
+    const sprite = this.createCounterSprite(LANES[lane], y, kind)
+    const shot: CounterShot = {
+      id: this.nextId,
+      lane,
+      x: LANES[lane],
+      y,
+      speed,
+      radius,
+      damage,
+      kind,
+      sprite,
+    }
+    this.nextId += 1
+    this.counterShots.push(shot)
+  }
+
+  private updateCounterShots(dt: number) {
+    const shots = [...this.counterShots]
+    for (const shot of shots) {
+      shot.y -= shot.speed * dt
+      shot.x += (BOSS_X - shot.x) * dt * (shot.kind === 'wave' ? 1.2 : 0.72)
+      shot.sprite.setPosition(shot.x, shot.y)
+      shot.sprite.setRotation(shot.sprite.rotation + dt * (shot.kind === 'wave' ? 0.4 : 5.6))
+      this.destroyBulletsOnCounterPath(shot)
+
+      if (shot.y <= BOSS_Y + 34) {
+        this.damageBoss(shot.damage, shot.kind)
+        this.removeCounterShot(shot)
+      }
+    }
+  }
+
+  private destroyBulletsOnCounterPath(shot: CounterShot) {
+    const bullets = this.enemyBullets.filter((bullet) => {
+      const sameLane = bullet.lane === shot.lane
+      const yDistance = Math.abs(bullet.y - shot.y)
+      return sameLane && yDistance <= shot.radius + bullet.radius
     })
 
-    if (this.boss.hp <= 0) {
-      this.clearStage()
+    bullets.forEach((bullet) => {
+      this.burst(LANES[bullet.lane], bullet.y, shot.kind === 'wave' ? 0xffffff : 0x67e8f9, 6)
+      this.removeEnemyBullet(bullet)
+    })
+  }
+
+  private damageBoss(amount: number, kind: CounterKind) {
+    this.bossHp = Math.max(0, this.bossHp - amount)
+    this.updateHud()
+    this.burst(BOSS_X, BOSS_Y + 24, kind === 'wave' ? 0xffffff : 0xfacc15, kind === 'wave' ? 20 : 10)
+    this.cameras.main.shake(kind === 'wave' ? 180 : 90, kind === 'wave' ? 0.006 : 0.003)
+    this.boss.setTint(kind === 'wave' ? 0xffffff : 0xfef08a)
+    this.time.delayedCall(90, () => {
+      if (this.boss.active) {
+        this.boss.clearTint()
+      }
+    })
+
+    if (this.bossHp <= 0) {
+      this.finishBattle('victory')
     }
   }
 
-  private updateBossHealthBar() {
-    if (!this.boss) {
+  private hitPlayer(bullet: EnemyBullet) {
+    this.removeEnemyBullet(bullet)
+    if (this.realTimeMs < this.invulnerableUntil) {
       return
     }
 
-    const ratio = Phaser.Math.Clamp(this.boss.hp / this.boss.maxHp, 0, 1)
-    this.bossBarFill.width = 256 * ratio
-  }
-
-  private fireAimedBullet(x: number, y: number, speed: number, color: number, radius: number) {
-    const angle = Phaser.Math.Angle.Between(x, y, this.player.x, this.player.y)
-    this.fireEnemyBullet(x, y, Math.cos(angle) * speed, Math.sin(angle) * speed, color, radius)
-  }
-
-  private fireFan(
-    x: number,
-    y: number,
-    centerAngle: number,
-    count: number,
-    spread: number,
-    speed: number,
-    color: number,
-    radius: number,
-  ) {
-    for (let index = 0; index < count; index += 1) {
-      const offset = count === 1 ? 0 : Phaser.Math.Linear(-spread, spread, index / (count - 1))
-      const angle = centerAngle + offset
-      this.fireEnemyBullet(x, y, Math.cos(angle) * speed, Math.sin(angle) * speed, color, radius)
-    }
-  }
-
-  private fireRing(x: number, y: number, count: number, speed: number, rotation: number, color: number, radius: number) {
-    for (let index = 0; index < count; index += 1) {
-      const angle = rotation + (Math.PI * 2 * index) / count
-      this.fireEnemyBullet(x, y, Math.cos(angle) * speed, Math.sin(angle) * speed, color, radius)
-    }
-  }
-
-  private fireEnemyBullet(x: number, y: number, vx: number, vy: number, color: number, radius: number) {
-    const body = this.enableEllipsePhysics(this.add.ellipse(x, y, radius * 2, radius * 2, color, 0.95), this.enemyBulletsGroup, radius)
-    body.setStrokeStyle(1, 0xffffff, 0.55)
-    body.body.setVelocity(vx, vy)
-    const debug = this.createDebugCircle(x, y, radius, 0xfacc15)
-    this.enemyBullets.push({ body, radius, grazed: false, debug })
-  }
-
-  private checkGraze(bullet: EnemyBullet) {
-    if (bullet.grazed || this.isGameOver || this.isStageClear) {
-      return
-    }
-
-    const distance = Phaser.Math.Distance.Between(this.player.x, this.player.y, bullet.body.x, bullet.body.y)
-    if (distance <= PLAYER_GRAZE_RADIUS + bullet.radius && distance > 10 + bullet.radius) {
-      bullet.grazed = true
-      this.grazeCount += 1
-      this.addScore(this.stage.score.graze, true)
-      this.grazeText.setText(`GRAZE ${this.grazeCount}`)
-      createGrazeSpark(this, bullet.body.x, bullet.body.y)
-      playTone(this.settings, 1_120, 32, 'sine', 0.045)
-    }
-  }
-
-  private damagePlayer(time: number) {
-    if (time < this.invulnerableUntil || this.isGameOver || this.isStageClear) {
-      return
-    }
-
-    this.lives -= 1
-    this.noMissRun = false
-    this.chain = 0
-    this.multiplier = 1
-    this.updateLivesDisplay()
-    this.updateScoreDisplay()
-    createBurst(this, this.player.x, this.player.y, 0xfecaca, 12)
-    playTone(this.settings, 100, 180, 'sawtooth', 0.18)
-    shakeCamera(this, this.settings, 220, 0.012)
-
-    if (this.lives <= 0) {
-      this.endGame()
-      return
-    }
-
-    this.invulnerableUntil = time + PLAYER_HIT_INVULNERABLE_MS
-    this.statusMessageUntil = time + 900
-    this.statusText.setText(
-      text({ ko: `피격! 남은 목숨: ${this.lives}`, en: `Hit! Lives left: ${this.lives}` }, this.settings.language),
-    )
-    this.statusText.setColor('#fecaca')
-
+    this.playerHp = Math.max(0, this.playerHp - 1)
+    this.invulnerableUntil = this.realTimeMs + 1_000
+    this.updateHud()
+    this.showFeedback('HIT', 0xfb7185)
+    this.burst(LANES[this.playerLane], HIT_Y, 0xfb7185, 14)
+    this.cameras.main.shake(220, 0.006)
+    this.player.setTexture('samurai-guard')
+    this.player.setTint(0xfb7185)
     this.tweens.add({
       targets: this.player,
       alpha: 0.35,
-      duration: 90,
-      repeat: 5,
+      duration: 70,
+      repeat: 6,
       yoyo: true,
       onComplete: () => {
-        this.player.setAlpha(1)
-        if (!this.isGameOver && !this.isStageClear) {
-          this.statusText.setColor('#93c5fd')
+        if (this.player.active) {
+          this.player.alpha = 1
+          this.player.clearTint()
+          this.player.setTexture('samurai-idle')
         }
       },
     })
-  }
+    this.playTone(90, 180, 'sawtooth', 0.045)
 
-  private updateLivesDisplay() {
-    this.lifeIcons.forEach((icon, index) => {
-      const isActive = index < this.lives
-      icon.setAlpha(isActive ? 1 : 0.24)
-      icon.setTint(isActive ? 0xffffff : 0x64748b)
-    })
-  }
-
-  private updateBombDisplay() {
-    this.bombIcons.forEach((icon, index) => {
-      const isActive = index < this.bombs
-      icon.setAlpha(isActive ? 1 : 0.2)
-      icon.setFillStyle(isActive ? 0xfde68a : 0x475569, isActive ? 0.95 : 0.42)
-    })
-  }
-
-  private collectPowerUp(powerUp: PowerUp) {
-    this.powerUps = this.powerUps.filter((item) => item !== powerUp)
-    this.destroyPowerUp(powerUp)
-
-    if (this.weaponLevel < MAX_WEAPON_LEVEL) {
-      this.weaponLevel += 1
-      this.updateWeaponDisplay()
-      const label = this.weaponLevel === 2 ? { ko: '2연발', en: 'Twin shot' } : { ko: '3방향', en: 'Triple spread' }
-      this.statusText.setText(text({ ko: `파워 업! ${label.ko}`, en: `Power up! ${label.en}` }, this.settings.language))
-    } else {
-      this.addScore(1_000, true)
-      this.statusText.setText(text({ ko: '최대 화력 보너스 +1000', en: 'Max weapon bonus +1000' }, this.settings.language))
+    if (this.playerHp <= 0) {
+      this.finishBattle('defeat')
     }
-
-    this.statusMessageUntil = this.time.now + 1_100
-    this.statusText.setColor('#fde68a')
-    createBurst(this, this.player.x, this.player.y - 16, 0xfde68a, 8)
-    playTone(this.settings, 980, 120, 'triangle', 0.12)
   }
 
-  private updateWeaponDisplay() {
-    this.weaponText.setText(`WEAPON Lv.${this.weaponLevel}`)
-    this.weaponText.setColor(this.weaponLevel === MAX_WEAPON_LEVEL ? '#bbf7d0' : '#fde68a')
-  }
-
-  private updateStatus(time: number, elapsedMs: number) {
-    if (this.boss || time < this.statusMessageUntil) {
-      return
-    }
-
-    const remainingSeconds = Math.max(0, Math.ceil((this.stage.bossAppearMs - elapsedMs) / 1000))
-    const difficulty = text(DIFFICULTIES[this.settings.difficulty].label, this.settings.language)
-    this.statusText.setText(
-      text(
-        { ko: `${difficulty} - 보스 출현까지 ${remainingSeconds}s`, en: `${difficulty} - boss in ${remainingSeconds}s` },
-        this.settings.language,
-      ),
-    )
-    this.statusText.setColor('#93c5fd')
-  }
-
-  private addScore(base: number, extendsChain: boolean) {
-    if (extendsChain) {
-      this.chain += 1
-      this.maxChain = Math.max(this.maxChain, this.chain)
-      this.lastChainAt = this.time.now
-      this.multiplier = 1 + Math.min(3.5, this.chain * this.stage.score.chainStep)
-    }
-
-    const gain = base * this.multiplier * this.difficulty.scoreMultiplier
-    this.score += Math.round(gain)
-    if (this.score > this.displayedBestScore) {
-      this.displayedBestScore = this.score
-      this.bestText.setText(`BEST ${formatScore(this.displayedBestScore)}`)
-    }
-
-    this.updateScoreDisplay()
-  }
-
-  private updateChain(time: number) {
-    if (this.chain === 0 || time - this.lastChainAt <= this.stage.score.chainTimeoutMs) {
-      return
-    }
-
-    this.chain = 0
-    this.multiplier = 1
-    this.updateScoreDisplay()
-  }
-
-  private updateScoreDisplay() {
-    this.scoreText.setText(`SCORE ${formatScore(this.score)}`)
-    this.chainText.setText(`x${this.multiplier.toFixed(2)}  CHAIN ${this.chain}`)
-  }
-
-  private endGame() {
-    if (this.isGameOver) {
-      return
-    }
-
-    this.isGameOver = true
-    saveBestScore(this.settings, this.mode, this.score)
-    this.statusText.setText(text({ ko: '게임 오버. 발사키로 재시작 / 폭탄키로 메뉴', en: 'Game over. Fire to restart / Bomb for menu' }, this.settings.language))
-    this.statusText.setColor('#fecaca')
-    this.showResultPanel(false)
-  }
-
-  private clearStage() {
-    if (!this.boss) {
-      return
-    }
-
-    this.clearTimeMs = this.time.now - this.stageStartedAt
-    this.destroyBoss()
-    this.enemyBullets.forEach((bullet) => this.destroyEnemyBullet(bullet))
-    this.enemies.forEach((enemy) => this.destroyEnemy(enemy))
-    this.powerUps.forEach((powerUp) => this.destroyPowerUp(powerUp))
+  private finishBattle(state: 'victory' | 'defeat') {
+    this.state = state
+    this.queuedAttacks = []
+    this.enemyBullets.forEach((bullet) => bullet.sprite.destroy())
     this.enemyBullets = []
-    this.enemies = []
-    this.powerUps = []
-    this.isStageClear = true
-    this.setBossUiVisible(false)
-    const bonuses = this.applyClearBonuses()
-    saveBestScore(this.settings, this.mode, this.score)
-    flashScreen(this, 0xbbf7d0, 0.18)
-    shakeCamera(this, this.settings, 280, 0.01)
-    this.statusText.setText(text({ ko: 'STAGE CLEAR. 발사키로 재시작 / 폭탄키로 메뉴', en: 'STAGE CLEAR. Fire to restart / Bomb for menu' }, this.settings.language))
-    this.statusText.setColor('#bbf7d0')
-    this.showResultPanel(true, bonuses)
-    playTone(this.settings, 740, 260, 'triangle', 0.18)
-  }
 
-  private applyClearBonuses(): ClearBonusBreakdown {
-    const timeRatio = Phaser.Math.Clamp(1 - this.clearTimeMs / this.stage.score.timeBonusDeadlineMs, 0, 1)
-    const bonuses: ClearBonusBreakdown = {
-      clear: this.stage.score.clearBase,
-      noMiss: this.noMissRun ? this.stage.score.noMissBonus : 0,
-      noBomb: this.noBombRun ? this.stage.score.noBombBonus : 0,
-      lives: Math.max(0, this.lives) * this.stage.score.lifeBonus,
-      bombs: Math.max(0, this.bombs) * this.stage.score.bombBonus,
-      time: Math.round(this.stage.score.timeBonusMax * timeRatio),
-    }
-
-    const total =
-      bonuses.clear + bonuses.noMiss + bonuses.noBomb + bonuses.lives + bonuses.bombs + bonuses.time
-    this.score += Math.round(total * this.difficulty.scoreMultiplier)
-    this.updateScoreDisplay()
-    return bonuses
-  }
-
-  private showResultPanel(cleared: boolean, bonuses?: ClearBonusBreakdown) {
-    this.resultPanel?.destroy()
-
-    const panel = this.add.container(GAME_WIDTH / 2, 274)
-    const background = this.add.rectangle(0, 0, 382, cleared ? 244 : 192, 0x020617, 0.9)
-    background.setStrokeStyle(2, cleared ? 0xbbf7d0 : 0xfca5a5, 0.9)
-    const rank = cleared ? this.calculateRank() : 'TRY'
+    const panel = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 330, 150, 0x020617, 0.88)
+    panel.setStrokeStyle(2, state === 'victory' ? 0xfacc15 : 0xfb7185, 0.95)
+    panel.setDepth(60)
     const title = this.add
-      .text(0, -92, cleared ? `RANK ${rank}` : text({ ko: 'RUN FAILED', en: 'RUN FAILED' }, this.settings.language), {
-        color: cleared ? '#fef08a' : '#fecaca',
+      .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 30, state === 'victory' ? '승리' : '패배', {
+        align: 'center',
+        color: state === 'victory' ? '#fef3c7' : '#fecdd3',
         fontFamily: UI_FONT,
-        fontSize: cleared ? '40px' : '30px',
+        fontSize: '34px',
         fontStyle: '900',
       })
       .setOrigin(0.5)
+      .setDepth(61)
+    const detail = this.add
+      .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 22, state === 'victory' ? '가면 무사의 시험을 통과했다' : '검의 호흡이 흐트러졌다', {
+        align: 'center',
+        color: '#e5e7eb',
+        fontFamily: UI_FONT,
+        fontSize: '16px',
+      })
+      .setOrigin(0.5)
+      .setDepth(61)
 
-    const stats = [
-      `SCORE ${formatScore(this.score)}`,
-      `MAX CHAIN ${this.maxChain}`,
-      `GRAZE ${this.grazeCount}`,
-      `${text({ ko: '난이도', en: 'Difficulty' }, this.settings.language)} ${text(this.difficulty.label, this.settings.language)}`,
-    ]
+    this.tweens.add({
+      targets: [panel, title, detail],
+      scale: { from: 0.94, to: 1 },
+      duration: 180,
+      ease: 'Back.easeOut',
+    })
+    this.playTone(state === 'victory' ? 740 : 130, 240, state === 'victory' ? 'triangle' : 'sawtooth', 0.06)
+  }
 
-    if (cleared && bonuses) {
-      stats.push(`NO MISS ${bonuses.noMiss > 0 ? '+' + formatScore(bonuses.noMiss) : '-'}`)
-      stats.push(`NO BOMB ${bonuses.noBomb > 0 ? '+' + formatScore(bonuses.noBomb) : '-'}`)
+  private removeEnemyBullet(bullet: EnemyBullet) {
+    this.enemyBullets = this.enemyBullets.filter((item) => item.id !== bullet.id)
+    bullet.sprite.destroy()
+  }
+
+  private removeCounterShot(shot: CounterShot) {
+    this.counterShots = this.counterShots.filter((item) => item.id !== shot.id)
+    shot.sprite.destroy()
+  }
+
+  private triggerSlowMo(scale: number, durationMs: number) {
+    this.slowMoScale = Math.min(this.slowMoScale, scale)
+    this.slowMoUntil = Math.max(this.slowMoUntil, this.realTimeMs + durationMs)
+  }
+
+  private createBackdrop() {
+    this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x0f172a)
+
+    const bands = [0x172554, 0x1e1b4b, 0x312e81, 0x164e63, 0x0f766e, 0x111827]
+    bands.forEach((color, index) => {
+      this.add.rectangle(GAME_WIDTH / 2, (GAME_HEIGHT / bands.length) * (index + 0.5), GAME_WIDTH, GAME_HEIGHT / bands.length + 2, color, 0.3 + index * 0.07)
+    })
+
+    this.add.circle(382, 78, 38, 0xfffbeb, 0.85).setStrokeStyle(2, 0xfacc15, 0.24)
+    this.add.rectangle(GAME_WIDTH / 2, 186, GAME_WIDTH, 10, 0x7f1d1d, 0.9)
+    this.add.rectangle(GAME_WIDTH / 2, 198, GAME_WIDTH, 7, 0xfacc15, 0.68)
+    this.add.rectangle(GAME_WIDTH / 2, 624, GAME_WIDTH, 192, 0x1f2937, 0.98)
+    this.add.rectangle(GAME_WIDTH / 2, 560, GAME_WIDTH, 18, 0x78350f, 0.95)
+
+    for (let index = 0; index < 9; index += 1) {
+      this.add.rectangle(index * 60 + 12, 646, 34, 160, index % 2 === 0 ? 0x334155 : 0x475569, 0.5)
     }
 
-    const body = this.add
-      .text(-160, cleared ? -42 : -36, stats.join('\n'), {
-        color: '#e5e7eb',
+    LANES.forEach((x, index) => {
+      const lane = this.add.rectangle(x, 402, 92, 454, index === 1 ? 0x082f49 : 0x111827, index === 1 ? 0.32 : 0.28)
+      lane.setStrokeStyle(1, 0x67e8f9, 0.18)
+      this.add.rectangle(x, HIT_Y, 74, 4, 0xfacc15, 0.52)
+      this.add.rectangle(x, PLAYER_Y + 42, 82, 10, 0x020617, 0.45)
+    })
+
+    this.add.rectangle(32, 404, 18, 388, 0x7f1d1d, 0.68)
+    this.add.rectangle(GAME_WIDTH - 32, 404, 18, 388, 0x7f1d1d, 0.68)
+  }
+
+  private createActors() {
+    this.bossShadow = this.add.ellipse(BOSS_X, BOSS_Y + 48, 120, 24, 0x000000, 0)
+    this.bossShadow.setDepth(5)
+    this.boss = this.add.image(BOSS_X, BOSS_Y - 28, 'masked-boss')
+    this.boss.setScale(2.15)
+    this.boss.setDepth(8)
+
+    this.playerShadow = this.add.ellipse(LANES[this.playerLane], PLAYER_Y + 32, 72, 18, 0x000000, 0.34)
+    this.playerShadow.setDepth(9)
+    this.player = this.add.image(LANES[this.playerLane], PLAYER_Y, 'samurai-idle')
+    this.player.setScale(PLAYER_SPRITE_SCALE)
+    this.player.setDepth(14)
+  }
+
+  private createHud() {
+    this.add
+      .text(20, 16, '가면 무사의 시험', {
+        color: '#f8fafc',
+        fontFamily: UI_FONT,
+        fontSize: '20px',
+        fontStyle: '900',
+      })
+      .setDepth(50)
+    this.add
+      .text(20, 43, 'LEVEL 1', {
+        color: '#facc15',
         fontFamily: MONO_FONT,
-        fontSize: '16px',
-        lineSpacing: 8,
+        fontSize: '12px',
+        fontStyle: '800',
+      })
+      .setDepth(50)
+
+    const barX = GAME_WIDTH / 2 - BOSS_BAR_WIDTH / 2
+    const frame = this.add.rectangle(barX, 38, BOSS_BAR_WIDTH, 11, 0x020617, 0.92)
+    frame.setOrigin(0, 0.5)
+    frame.setStrokeStyle(1, 0xf8fafc, 0.35)
+    frame.setDepth(50)
+    this.bossBarFill = this.add.rectangle(barX, 38, BOSS_BAR_WIDTH, 7, 0xfb7185, 0.95)
+    this.bossBarFill.setOrigin(0, 0.5)
+    this.bossBarFill.setDepth(51)
+
+    this.phaseText = this.add
+      .text(20, 62, `PHASE 1  ${PHASE_NAMES[1]}`, {
+        align: 'left',
+        color: '#bfdbfe',
+        fontFamily: MONO_FONT,
+        fontSize: '12px',
+        fontStyle: '800',
       })
       .setOrigin(0, 0)
+      .setDepth(50)
 
-    const footer = this.add
-      .text(
-        0,
-        cleared ? 94 : 70,
-        text({ ko: '발사키: 재시작    폭탄키: 메뉴', en: 'Fire: Restart    Bomb: Menu' }, this.settings.language),
-        {
-          color: '#bae6fd',
-          fontFamily: UI_FONT,
-          fontSize: '14px',
-        },
-      )
+    this.timerText = this.add
+      .text(GAME_WIDTH - 20, 16, '00:00', {
+        align: 'right',
+        color: '#e0f2fe',
+        fontFamily: MONO_FONT,
+        fontSize: '16px',
+        fontStyle: '800',
+      })
+      .setOrigin(1, 0)
+      .setDepth(50)
+
+    for (let index = 0; index < MAX_PLAYER_HP; index += 1) {
+      const mark = this.add.rectangle(24 + index * 20, 682, 13, 20, 0xfb7185, 0.95)
+      mark.setRotation(Math.PI / 4)
+      mark.setDepth(50)
+      this.hpMarks.push(mark)
+    }
+
+    for (let index = 0; index < MAX_SWORDS; index += 1) {
+      const pip = this.add.rectangle(GAME_WIDTH - 116 + index * 21, 682, 7, 28, 0xdbeafe, 0.95)
+      pip.setRotation(Math.PI / 7)
+      pip.setStrokeStyle(1, 0x67e8f9, 0.62)
+      pip.setDepth(50)
+      this.swordPips.push(pip)
+    }
+
+    this.feedbackText = this.add
+      .text(GAME_WIDTH / 2, 474, '', {
+        align: 'center',
+        color: '#ffffff',
+        fontFamily: UI_FONT,
+        fontSize: '28px',
+        fontStyle: '900',
+      })
       .setOrigin(0.5)
-
-    panel.add([background, title, body, footer])
-    panel.setDepth(40)
-    this.resultPanel = panel
+      .setDepth(55)
+    this.updateHud()
   }
 
-  private calculateRank() {
-    const score = this.score
-    if (this.noMissRun && this.noBombRun && score >= 90_000) {
-      return 'SS'
+  private updateHud() {
+    this.bossBarFill.width = BOSS_BAR_WIDTH * (this.bossHp / MAX_BOSS_HP)
+    this.bossBarFill.fillColor = PHASE_COLORS[this.getPhase()]
+
+    this.hpMarks.forEach((mark, index) => {
+      mark.setFillStyle(index < this.playerHp ? 0xfb7185 : 0x334155, index < this.playerHp ? 0.95 : 0.5)
+    })
+
+    this.swordPips.forEach((pip, index) => {
+      pip.setFillStyle(index < this.swords ? 0xdbeafe : 0x334155, index < this.swords ? 0.95 : 0.42)
+    })
+  }
+
+  private updateTimer() {
+    const seconds = Math.max(0, Math.floor((this.battleClockMs - INTRO_MS) / 1000))
+    const minutesText = Math.floor(seconds / 60).toString().padStart(2, '0')
+    const secondsText = (seconds % 60).toString().padStart(2, '0')
+    this.timerText?.setText(`${minutesText}:${secondsText}`)
+  }
+
+  private flashLane(lane: Lane, color: number) {
+    const flash = this.add.rectangle(LANES[lane], 402, 92, 454, color, 0.12)
+    flash.setDepth(4)
+    this.tweens.add({
+      targets: flash,
+      alpha: 0,
+      duration: 260,
+      ease: 'Cubic.easeOut',
+      onComplete: () => flash.destroy(),
+    })
+  }
+
+  private flashSwordPips(color: number) {
+    this.swordPips.forEach((pip) => {
+      pip.setStrokeStyle(2, color, 0.95)
+      this.time.delayedCall(120, () => {
+        if (pip.active) {
+          pip.setStrokeStyle(1, 0x67e8f9, 0.62)
+        }
+      })
+    })
+  }
+
+  private showFeedback(message: string, color: number) {
+    this.feedbackText.setText(message)
+    this.feedbackText.setColor(Phaser.Display.Color.IntegerToColor(color).rgba)
+    this.feedbackText.setAlpha(1)
+    this.feedbackText.setY(474)
+    this.tweens.killTweensOf(this.feedbackText)
+    this.tweens.add({
+      targets: this.feedbackText,
+      alpha: 0,
+      y: 444,
+      duration: 760,
+      ease: 'Cubic.easeOut',
+    })
+  }
+
+  private darkSlashFlash() {
+    const dark = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.46)
+    dark.setDepth(44)
+    const cut = this.add.rectangle(GAME_WIDTH / 2, HIT_Y - 24, GAME_WIDTH + 80, 12, 0xffffff, 0.9)
+    cut.setRotation(-0.18)
+    cut.setDepth(45)
+    this.tweens.add({
+      targets: dark,
+      alpha: 0,
+      duration: 240,
+      ease: 'Cubic.easeOut',
+      onComplete: () => dark.destroy(),
+    })
+    this.tweens.add({
+      targets: cut,
+      alpha: 0,
+      scaleX: 1.08,
+      duration: 180,
+      ease: 'Cubic.easeOut',
+      onComplete: () => cut.destroy(),
+    })
+  }
+
+  private burst(x: number, y: number, color: number, count: number) {
+    for (let index = 0; index < count; index += 1) {
+      const angle = (Math.PI * 2 * index) / count + Phaser.Math.FloatBetween(-0.24, 0.24)
+      const distance = Phaser.Math.Between(18, 52)
+      const spark = this.add.circle(x, y, Phaser.Math.FloatBetween(2.2, 5.2), color, 0.92)
+      spark.setDepth(30)
+      this.tweens.add({
+        targets: spark,
+        x: x + Math.cos(angle) * distance,
+        y: y + Math.sin(angle) * distance,
+        alpha: 0,
+        scale: 0.25,
+        duration: Phaser.Math.Between(220, 420),
+        ease: 'Cubic.easeOut',
+        onComplete: () => spark.destroy(),
+      })
+    }
+  }
+
+  private createEnemyBulletSprite(x: number, y: number, kind: BulletKind) {
+    const color = kind === 'heavy' ? 0xf97316 : 0x93c5fd
+    const accent = kind === 'heavy' ? 0xfef3c7 : 0xe0f2fe
+    const radius = kind === 'heavy' ? 20 : 12
+    const body = this.add.container(x, y)
+    const glow = this.add.circle(0, 0, radius + 9, color, kind === 'heavy' ? 0.22 : 0.15)
+    const core = this.add.circle(0, 0, radius, color, 0.96)
+    core.setStrokeStyle(2, accent, 0.88)
+    const edge = this.add.rectangle(0, 0, kind === 'heavy' ? 5 : 3, radius * 1.55, accent, 0.74)
+    body.add([glow, core, edge])
+    body.setDepth(kind === 'heavy' ? 13 : 12)
+    return body
+  }
+
+  private createCounterSprite(x: number, y: number, kind: CounterKind) {
+    const body = this.add.container(x, y)
+    if (kind === 'wave') {
+      const glow = this.add.rectangle(0, 0, 122, 18, 0xffffff, 0.18)
+      const blade = this.add.rectangle(0, 0, 104, 8, 0xffffff, 0.96)
+      const core = this.add.rectangle(0, -8, 76, 4, 0xfacc15, 0.82)
+      glow.setRotation(-0.18)
+      blade.setRotation(-0.18)
+      core.setRotation(-0.18)
+      body.add([glow, blade, core])
+    } else {
+      const trail = this.add.rectangle(0, 18, 6, 42, 0x67e8f9, 0.22)
+      const core = this.add.circle(0, 0, 9, 0xfef3c7, 0.96)
+      core.setStrokeStyle(2, 0x67e8f9, 0.82)
+      body.add([trail, core])
     }
 
-    if (score >= 72_000) {
-      return 'S'
-    }
-
-    if (score >= 52_000) {
-      return 'A'
-    }
-
-    if (score >= 34_000) {
-      return 'B'
-    }
-
-    return 'C'
+    body.setDepth(18)
+    return body
   }
 
-  private destroyPlayerBullet(bullet: PlayerBullet) {
-    bullet.body.destroy()
-    bullet.debug?.destroy()
+  private createSpriteTextures() {
+    this.createSamuraiIdleTexture()
+    this.createSamuraiGuardTexture()
+    this.createSamuraiSlashTexture()
+    this.createBossTexture()
   }
 
-  private destroyEnemyBullet(bullet: EnemyBullet) {
-    bullet.body.destroy()
-    bullet.debug?.destroy()
+  private createSamuraiIdleTexture() {
+    this.drawTexture('samurai-idle', 44, 52, (pixel) => {
+      pixel(18, 3, 10, 4, 0xfef08a)
+      pixel(14, 7, 18, 8, 0xfacc15)
+      pixel(16, 14, 15, 8, 0xf59e0b)
+      pixel(19, 20, 9, 4, 0x92400e)
+      pixel(13, 23, 18, 17, 0x111827)
+      pixel(17, 25, 11, 13, 0x1f2937)
+      pixel(18, 28, 8, 3, 0x0f766e)
+      pixel(30, 23, 9, 15, 0xb91c1c)
+      pixel(34, 31, 6, 6, 0xef4444)
+      pixel(9, 23, 6, 17, 0x334155)
+      pixel(31, 24, 5, 15, 0x334155)
+      pixel(13, 40, 8, 9, 0x111827)
+      pixel(25, 40, 8, 9, 0x111827)
+      pixel(10, 48, 12, 3, 0x020617)
+      pixel(24, 48, 12, 3, 0x020617)
+      pixel(7, 13, 4, 30, 0xe5e7eb)
+      pixel(5, 15, 3, 22, 0x64748b)
+      pixel(9, 10, 5, 7, 0x111827)
+    })
   }
 
-  private destroyPowerUp(powerUp: PowerUp) {
-    this.tweens.killTweensOf(powerUp.body)
-    this.tweens.killTweensOf(powerUp.glow)
-    powerUp.body.destroy()
-    powerUp.glow.destroy()
-    powerUp.debug?.destroy()
+  private createSamuraiGuardTexture() {
+    this.drawTexture('samurai-guard', 44, 52, (pixel) => {
+      pixel(18, 3, 11, 4, 0xfef08a)
+      pixel(13, 7, 19, 8, 0xfacc15)
+      pixel(16, 14, 15, 8, 0xf59e0b)
+      pixel(19, 20, 9, 4, 0x92400e)
+      pixel(13, 24, 18, 16, 0x111827)
+      pixel(17, 26, 11, 11, 0x1f2937)
+      pixel(18, 29, 8, 3, 0x0f766e)
+      pixel(30, 23, 9, 14, 0xb91c1c)
+      pixel(8, 21, 5, 20, 0x334155)
+      pixel(31, 22, 5, 18, 0x334155)
+      pixel(14, 40, 8, 9, 0x111827)
+      pixel(25, 40, 8, 9, 0x111827)
+      pixel(11, 48, 12, 3, 0x020617)
+      pixel(24, 48, 12, 3, 0x020617)
+      pixel(22, 8, 5, 39, 0xf8fafc)
+      pixel(20, 12, 3, 28, 0x64748b)
+      pixel(18, 29, 13, 5, 0x111827)
+    })
   }
 
-  private destroyEnemy(enemy: Enemy) {
-    enemy.body.destroy()
-    enemy.debug?.destroy()
+  private createSamuraiSlashTexture() {
+    this.drawTexture('samurai-slash', 64, 52, (pixel) => {
+      pixel(24, 3, 11, 4, 0xfef08a)
+      pixel(20, 7, 19, 8, 0xfacc15)
+      pixel(22, 14, 16, 8, 0xf59e0b)
+      pixel(25, 20, 9, 4, 0x92400e)
+      pixel(20, 24, 18, 16, 0x111827)
+      pixel(24, 26, 11, 11, 0x1f2937)
+      pixel(25, 29, 8, 3, 0x0f766e)
+      pixel(37, 23, 12, 10, 0xb91c1c)
+      pixel(46, 27, 9, 5, 0xef4444)
+      pixel(16, 24, 6, 16, 0x334155)
+      pixel(38, 23, 6, 16, 0x334155)
+      pixel(20, 40, 8, 9, 0x111827)
+      pixel(31, 40, 8, 9, 0x111827)
+      pixel(17, 48, 12, 3, 0x020617)
+      pixel(30, 48, 12, 3, 0x020617)
+      pixel(37, 15, 21, 4, 0xf8fafc)
+      pixel(55, 12, 6, 10, 0xe2e8f0)
+      pixel(36, 18, 8, 6, 0x111827)
+    })
   }
 
-  private destroyBoss() {
-    if (!this.boss) {
+  private createBossTexture() {
+    this.drawTexture('masked-boss', 70, 72, (pixel) => {
+      pixel(28, 3, 14, 6, 0xe5e7eb)
+      pixel(24, 9, 22, 14, 0xf8fafc)
+      pixel(28, 14, 4, 3, 0x111827)
+      pixel(38, 14, 4, 3, 0x111827)
+      pixel(31, 20, 8, 3, 0x991b1b)
+      pixel(18, 23, 34, 29, 0x111827)
+      pixel(22, 27, 26, 19, 0x1f2937)
+      pixel(11, 28, 11, 23, 0x7f1d1d)
+      pixel(48, 28, 11, 23, 0x7f1d1d)
+      pixel(15, 51, 13, 14, 0x111827)
+      pixel(41, 51, 13, 14, 0x111827)
+      pixel(11, 64, 17, 4, 0x020617)
+      pixel(40, 64, 17, 4, 0x020617)
+      pixel(53, 8, 5, 47, 0xe5e7eb)
+      pixel(50, 12, 3, 39, 0x64748b)
+      pixel(46, 22, 13, 5, 0x111827)
+      pixel(31, 29, 8, 11, 0xfacc15)
+      pixel(27, 39, 16, 4, 0xfacc15)
+    })
+  }
+
+  private drawTexture(key: string, width: number, height: number, draw: (pixel: (x: number, y: number, width: number, height: number, color: number, alpha?: number) => void) => void) {
+    if (this.textures.exists(key)) {
       return
     }
 
-    createBurst(this, this.boss.body.x, this.boss.body.y, 0xfef08a, 24)
-    this.boss.body.destroy()
-    this.boss.core.destroy()
-    this.boss.debug?.destroy()
-    this.boss = undefined
-  }
-
-  private createDebugRect(x: number, y: number, width: number, height: number, color: number) {
-    if (!DEBUG_HITBOXES) {
-      return undefined
+    const graphics = this.add.graphics()
+    graphics.setVisible(false)
+    const pixel = (x: number, y: number, pixelWidth: number, pixelHeight: number, color: number, alpha = 1) => {
+      graphics.fillStyle(color, alpha)
+      graphics.fillRect(x, y, pixelWidth, pixelHeight)
     }
-
-    const debug = this.add.rectangle(x, y, width, height, 0x000000, 0)
-    debug.setStrokeStyle(1, color, 0.9)
-    debug.setDepth(20)
-    return debug
+    draw(pixel)
+    graphics.generateTexture(key, width, height)
+    graphics.destroy()
   }
 
-  private createDebugCircle(x: number, y: number, radius: number, color: number) {
-    if (!DEBUG_HITBOXES) {
-      return undefined
-    }
-
-    const debug = this.add.ellipse(x, y, radius * 2, radius * 2, 0x000000, 0)
-    debug.setStrokeStyle(1, color, 0.95)
-    debug.setDepth(20)
-    return debug
-  }
-
-  private syncDebugRect(debug: Phaser.GameObjects.Rectangle | undefined, body: Phaser.GameObjects.Rectangle) {
-    if (!debug) {
+  private playTone(frequency: number, durationMs: number, type: OscillatorType, volume: number) {
+    if (!this.audioUnlocked) {
       return
     }
 
-    debug.x = body.x
-    debug.y = body.y
-    debug.width = body.width
-    debug.height = body.height
-  }
+    try {
+      const audioWindow = window as Window & { webkitAudioContext?: typeof AudioContext }
+      const AudioContextClass = window.AudioContext ?? audioWindow.webkitAudioContext
+      if (!AudioContextClass) {
+        return
+      }
 
-  private syncDebugCircle(debug: Phaser.GameObjects.Ellipse | undefined, body: Phaser.GameObjects.Ellipse) {
-    if (!debug) {
-      return
+      this.audioContext ??= new AudioContextClass()
+      const oscillator = this.audioContext.createOscillator()
+      const gain = this.audioContext.createGain()
+      const now = this.audioContext.currentTime
+      oscillator.type = type
+      oscillator.frequency.setValueAtTime(frequency, now)
+      gain.gain.setValueAtTime(0.0001, now)
+      gain.gain.exponentialRampToValueAtTime(volume, now + 0.012)
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + durationMs / 1000)
+      oscillator.connect(gain)
+      gain.connect(this.audioContext.destination)
+      oscillator.start(now)
+      oscillator.stop(now + durationMs / 1000 + 0.02)
+    } catch {
+      // Audio is feedback only; gameplay should continue if browser audio is unavailable.
     }
-
-    debug.x = body.x
-    debug.y = body.y
   }
 }
