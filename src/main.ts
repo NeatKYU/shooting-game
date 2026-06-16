@@ -21,8 +21,16 @@ const config: Phaser.Types.Core.GameConfig = {
     },
   },
   scene: [IntroScene, ShooterScene],
+  fps: {
+    target: 60,
+    min: 30,
+    smoothStep: true,
+  },
   render: {
-    pixelArt: true,
+    antialias: true,
+    antialiasGL: true,
+    pixelArt: false,
+    roundPixels: false,
   },
   scale: {
     autoCenter: Phaser.Scale.CENTER_BOTH,
