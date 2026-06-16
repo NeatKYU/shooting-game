@@ -1,6 +1,6 @@
 import Phaser from 'phaser'
 import { GAME_HEIGHT, GAME_WIDTH, MONO_FONT, UI_FONT } from '../game/config'
-import { SAMURAI_FRAMES, createSamuraiFrameTexture, preloadSamuraiSheet } from '../game/samuraiSprite'
+import { getSamuraiBaseTexture, preloadSamuraiAssets } from '../game/samuraiSprite'
 
 export class IntroScene extends Phaser.Scene {
   private startButton?: Phaser.GameObjects.Container
@@ -10,7 +10,7 @@ export class IntroScene extends Phaser.Scene {
   }
 
   preload() {
-    preloadSamuraiSheet(this)
+    preloadSamuraiAssets(this)
   }
 
   create() {
@@ -88,7 +88,7 @@ export class IntroScene extends Phaser.Scene {
     const bossShadow = this.add.ellipse(GAME_WIDTH / 2, 296, 142, 28, 0x000000, 0.26)
     const boss = this.add.image(GAME_WIDTH / 2, 246, 'intro-boss').setScale(3.1)
     const samuraiShadow = this.add.ellipse(GAME_WIDTH / 2, 522, 86, 20, 0x000000, 0.32)
-    const samurai = this.add.image(GAME_WIDTH / 2, 486, 'intro-samurai').setScale(2.25)
+    const samurai = this.add.image(GAME_WIDTH / 2, 486, getSamuraiBaseTexture('n')).setScale(2.25)
     samurai.setDepth(8)
 
     this.tweens.add({
@@ -147,8 +147,6 @@ export class IntroScene extends Phaser.Scene {
   }
 
   private createMenuTextures() {
-    createSamuraiFrameTexture(this, 'intro-samurai', SAMURAI_FRAMES.backIdle)
-
     this.drawTexture('intro-boss', 72, 76, (pixel) => {
       pixel(28, 3, 16, 7, 0xe5e7eb)
       pixel(24, 10, 24, 15, 0xf8fafc)

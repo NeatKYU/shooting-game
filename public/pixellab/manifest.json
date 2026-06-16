@@ -1,0 +1,31 @@
+{
+  "character": "chibi pixel art character with dark coat and fedora",
+  "source": "chibi_pixel_art_character_with_a_big_round_head_an.zip",
+  "attackSource": "1c419dc1/rotations",
+  "frameWidth": 92,
+  "frameHeight": 92,
+  "note": "base rotations plus Breathing_Idle frames; attack is a single pose until attack animation is implemented later",
+  "lanes": {
+    "ne": {
+      "direction": "north-east",
+      "lane": "left",
+      "base": "ne/base.png",
+      "idle": "ne/idle/frame_000.png..frame_003.png",
+      "attack": "ne/attack.png"
+    },
+    "n": {
+      "direction": "north",
+      "lane": "center",
+      "base": "n/base.png",
+      "idle": "n/idle/frame_000.png..frame_003.png",
+      "attack": "n/attack.png"
+    },
+    "nw": {
+      "direction": "north-west",
+      "lane": "right",
+      "base": "nw/base.png",
+      "idle": "nw/idle/frame_000.png..frame_003.png",
+      "attack": "nw/attack.png"
+    }
+  }
+}

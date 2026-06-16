@@ -1,0 +1,18 @@
+{
+  "character_id": "chibi_pixel_art_character_with_a_big_round_head_an",
+  "base_rotations": {
+    "north-east": "ne/base.png",
+    "north": "n/base.png",
+    "north-west": "nw/base.png"
+  },
+  "breathing_idle": {
+    "north-east": "ne/idle/frame_000.png..frame_003.png",
+    "north": "n/idle/frame_000.png..frame_003.png",
+    "north-west": "nw/idle/frame_000.png..frame_003.png"
+  },
+  "attack_rotations": {
+    "north-east": "ne/attack.png",
+    "north": "n/attack.png",
+    "north-west": "nw/attack.png"
+  }
+}

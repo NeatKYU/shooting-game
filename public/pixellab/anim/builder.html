@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Slash Builder</title>
+    <style>
+      :root { color-scheme: dark; }
+      body { margin: 0; padding: 20px; background: #0b1020; color: #e8ecff; font: 13px/1.5 ui-monospace, Menlo, monospace; }
+      h1 { font-size: 16px; margin: 0 0 14px; }
+      .lane { margin-bottom: 22px; padding-bottom: 14px; border-bottom: 1px solid #1d2540; }
+      .lane h2 { font-size: 13px; color: #ffd479; margin: 0 0 8px; }
+      .live { display: flex; gap: 16px; align-items: flex-end; margin-bottom: 10px; }
+      .live figure { margin: 0; text-align: center; }
+      .live figcaption { color: #8aa; font-size: 11px; margin-top: 4px; }
+      .frames { display: flex; gap: 6px; flex-wrap: wrap; }
+      .frames figure { margin: 0; text-align: center; }
+      .frames figcaption { color: #5f7; font-size: 10px; }
+      canvas { image-rendering: pixelated;
+        background: repeating-conic-gradient(#1c2238 0% 25%, #161b2e 0% 50%) 50% / 12px 12px; border-radius: 4px; }
+      button { background: #2a3a6a; color: #cfe; border: 0; padding: 5px 10px; border-radius: 6px; cursor: pointer; font: inherit; }
+      button:hover { background: #36499a; }
+    </style>
+  </head>
+  <body>
+    <h1>🗡️ Slash Builder — 8프레임 발도 콘티 · 잔상 · 번쩍 (방향별 동일 모션)</h1>
+    <div id="lanes"></div>
+    <script src="./slash.js"></script>
+    <script>
+      const SC = 4, FPS = 9
+      const S = window.SlashAnim
+      const LANES = [
+        { key: 'ne', label: '◤ 왼쪽 — north-east' },
+        { key: 'n', label: '▲ 가운데 — north' },
+        { key: 'nw', label: '◥ 오른쪽 — north-west' },
+      ]
+      const FRAME_NOTE = ['1 손→좌허리', '2 발도+번쩍', '3 윗단', '4 가운데(작은잔상)', '5 우측(큰잔상)', '6 잔상소멸', '7 =3', '8 칼집수']
+      const lanesEl = document.getElementById('lanes')
+
+      function scaledCanvas(w, h) {
+        const c = document.createElement('canvas')
+        c.width = w; c.height = h
+        c.style.width = w * SC + 'px'; c.style.height = h * SC + 'px'
+        c.getContext('2d').imageSmoothingEnabled = false
+        return c
+      }
+      function fig(canvas, caption) {
+        const f = document.createElement('figure'); const cap = document.createElement('figcaption')
+        cap.textContent = caption; f.append(canvas, cap); return f
+      }
+      function loadImg(src) { return new Promise((res) => { const i = new Image(); i.onload = () => res(i); i.src = src }) }
+
+      async function build() {
+        for (const lane of LANES) {
+          const base = await loadImg('/pixellab/' + lane.key + '/base.png')
+          const box = document.createElement('div'); box.className = 'lane'
+          const h2 = document.createElement('h2'); h2.textContent = lane.label
+          box.append(h2)
+
+          // live attack + roll
+          const live = document.createElement('div'); live.className = 'live'
+          const atkC = scaledCanvas(S.W, S.H), atkX = atkC.getContext('2d')
+          const rollC = scaledCanvas(S.W, S.H), rollX = rollC.getContext('2d')
+          let ai = 0, ri = 0
+          setInterval(() => { S.renderAttack(atkX, base, ai); ai = (ai + 1) % S.ATTACK_FRAMES }, 1000 / FPS)
+          setInterval(() => { S.renderRoll(rollX, base, ri, S.ROLL_FRAMES); ri = (ri + 1) % S.ROLL_FRAMES }, 1000 / FPS)
+          const dl = (anim, n) => () => {
+            const strip = document.createElement('canvas'); strip.width = S.W * n; strip.height = S.H
+            const sx = strip.getContext('2d'); sx.imageSmoothingEnabled = false
+            const cell = scaledCanvas(S.W, S.H), cx = cell.getContext('2d')
+            for (let i = 0; i < n; i++) { (anim === 'roll' ? S.renderRoll(cx, base, i, n) : S.renderAttack(cx, base, i)); sx.drawImage(cell, i * S.W, 0) }
+            strip.toBlob((b) => { const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = lane.key + '-' + anim + '-strip.png'; a.click() })
+          }
+          const atkBtn = document.createElement('button'); atkBtn.textContent = '⬇ attack strip'; atkBtn.onclick = dl('attack', S.ATTACK_FRAMES)
+          const rollBtn = document.createElement('button'); rollBtn.textContent = '⬇ roll strip'; rollBtn.onclick = dl('roll', S.ROLL_FRAMES)
+          live.append(fig(atkC, 'attack'), fig(rollC, 'roll'), atkBtn, rollBtn)
+          box.append(live)
+
+          // static numbered attack frames
+          const frames = document.createElement('div'); frames.className = 'frames'
+          for (let i = 0; i < S.ATTACK_FRAMES; i++) {
+            const c = scaledCanvas(S.W, S.H); S.renderAttack(c.getContext('2d'), base, i)
+            frames.append(fig(c, FRAME_NOTE[i]))
+          }
+          box.append(frames)
+          lanesEl.append(box)
+        }
+        window.__ready = true
+      }
+      build()
+    </script>
+  </body>
+</html>

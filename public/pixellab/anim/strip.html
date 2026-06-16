@@ -1,0 +1,47 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html, body { margin: 0; padding: 0; background: transparent; }
+      #strip { display: block; image-rendering: pixelated; }
+    </style>
+  </head>
+  <body>
+    <!-- 1:1 transparent spritesheet row for headless export. ?dir=ne|n|nw&anim=attack|roll -->
+    <canvas id="strip"></canvas>
+    <script src="./slash.js"></script>
+    <script>
+      const q = new URLSearchParams(location.search)
+      const dir = q.get('dir') || 'n'
+      const anim = q.get('anim') || 'attack'
+      const { W, H, ATTACK_FRAMES, ROLL_FRAMES, renderAttack, renderRoll } = window.SlashAnim
+      const n = anim === 'roll' ? ROLL_FRAMES : ATTACK_FRAMES
+
+      const strip = document.getElementById('strip')
+      strip.width = W * n
+      strip.height = H
+      const sctx = strip.getContext('2d')
+      sctx.imageSmoothingEnabled = false
+
+      const cell = document.createElement('canvas')
+      cell.width = W
+      cell.height = H
+      const cctx = cell.getContext('2d')
+
+      const base = new Image()
+      base.onload = () => {
+        for (let i = 0; i < n; i++) {
+          cctx.clearRect(0, 0, W, H)
+          if (anim === 'roll') renderRoll(cctx, base, i, n)
+          else renderAttack(cctx, base, i)
+          sctx.clearRect(i * W, 0, W, H)
+          sctx.drawImage(cell, i * W, 0)
+        }
+        document.title = 'ready'
+        window.__ready = true
+      }
+      base.src = '/pixellab/' + dir + '/base.png'
+    </script>
+  </body>
+</html>
