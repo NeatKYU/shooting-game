@@ -3,6 +3,7 @@ import type Phaser from 'phaser'
 export type DifficultyId = 'novice' | 'arcade'
 export type Language = 'ko' | 'en'
 export type GameMode = 'demo' | 'practice'
+export type BossId = 'frost-empress' | 'sakura-phantom' | 'verdant-deity' | 'dreamscape-reverie'
 export type EnemyMovementPattern =
   | 'formation'
   | 'diagonal-left'
@@ -14,12 +15,39 @@ export type EnemyMovementPattern =
   | 'split-left'
   | 'split-right'
 export type EnemyArchetypeId = 'scout' | 'wing' | 'turret' | 'elite'
-export type BulletPatternKind = 'aimed' | 'fan' | 'ring' | 'spiral' | 'delayed-burst'
+export type BulletPatternKind =
+  | 'aimed'
+  | 'fan'
+  | 'ring'
+  | 'spiral'
+  | 'delayed-burst'
+  | 'flower'
+  | 'curve'
+  | 'lissajous'
+  | 'golden-spiral'
+  | 'homing'
+  | 'crystal-bloom'
+  | 'laser-columns'
+  | 'lotus'
+  | 'petal-rain'
+  | 'leaf-canopy'
+  | 'butterfly-arc'
+  | 'rainbow-spiral'
+export type EnemyBulletType =
+  | 'normal'
+  | 'big'
+  | 'missile'
+  | 'laser'
+  | 'crystal'
+  | 'petal'
+  | 'leaf'
+  | 'butterfly'
 export type RebindTarget = keyof ControlSettings
 export type ArcadeOverlapObject = Parameters<Phaser.Types.Physics.Arcade.ArcadePhysicsCallback>[0]
 export type PhysicsImage = Phaser.GameObjects.Image & { body: Phaser.Physics.Arcade.Body }
 export type PhysicsRectangle = Phaser.GameObjects.Rectangle & { body: Phaser.Physics.Arcade.Body }
 export type PhysicsEllipse = Phaser.GameObjects.Ellipse & { body: Phaser.Physics.Arcade.Body }
+export type PhysicsShape = Phaser.GameObjects.Shape & { body: Phaser.Physics.Arcade.Body }
 
 export interface LocalizedText {
   ko: string
@@ -73,13 +101,63 @@ export interface BulletPattern {
   shotTimes: number[]
   color: number
   radius: number
+  bulletType?: EnemyBulletType
+  laserThickness?: number
+  laserLength?: number
   speed: number
   count?: number
   spread?: number
   centerAngle?: number
+  aimAtPlayer?: boolean
   rotationRate?: number
   bursts?: number
   burstDelayMs?: number
+  petals?: number
+  speedVariance?: number
+  speedStep?: number
+  turnRate?: number
+  alternateTurn?: boolean
+  acceleration?: number
+  minSpeed?: number
+  maxSpeed?: number
+  homingMs?: number
+  homingTurnRate?: number
+  lissajousA?: number
+  lissajousB?: number
+  phaseOffset?: number
+}
+
+export type BossBulletPattern = Omit<BulletPattern, 'shotTimes'>
+
+export interface BossBulletOrigin {
+  x: number
+  y: number
+}
+
+export interface BossPatternSchedule {
+  id: string
+  spellId: string
+  phase: 1 | 2
+  durationMs: number
+  intervalMs: number
+  initialDelayMs?: number
+  origins?: BossBulletOrigin[]
+  pattern: BossBulletPattern
+}
+
+export interface BossTheme {
+  stage: LocalizedText
+  spell: LocalizedText
+  difficulty: LocalizedText
+  leftSigil: LocalizedText
+  rightSigil: LocalizedText
+  backgroundTop: number
+  backgroundBottom: number
+  panel: number
+  panelAccent: number
+  bossAccent: number
+  bossCore: number
+  bulletAccent: number
 }
 
 export interface EnemyArchetype {
@@ -104,11 +182,14 @@ export interface StageEnemyEvent {
 }
 
 export interface BossDefinition {
+  id: BossId
   name: LocalizedText
   maxHp: number
   phaseTwoRatio: number
   phaseOneFill: number
   phaseTwoFill: number
+  theme: BossTheme
+  patterns: BossPatternSchedule[]
 }
 
 export interface StageDefinition {
@@ -137,10 +218,25 @@ export interface PowerUp {
 }
 
 export interface EnemyBullet {
-  body: PhysicsEllipse
+  body: PhysicsShape
+  type: EnemyBulletType
   radius: number
+  length?: number
+  angle: number
   grazed: boolean
-  debug?: Phaser.GameObjects.Ellipse
+  motion?: EnemyBulletMotion
+  debug?: Phaser.GameObjects.Shape
+}
+
+export interface EnemyBulletMotion {
+  angle: number
+  speed: number
+  turnRate?: number
+  acceleration?: number
+  minSpeed?: number
+  maxSpeed?: number
+  homingUntilMs?: number
+  homingTurnRate?: number
 }
 
 export interface Enemy {
@@ -158,20 +254,22 @@ export interface Enemy {
 export interface Boss {
   body: PhysicsRectangle
   core: Phaser.GameObjects.Ellipse
+  ornaments?: Phaser.GameObjects.GameObject[]
   debug?: Phaser.GameObjects.Rectangle
   hp: number
   maxHp: number
   phase: 1 | 2
   spawnElapsedMs: number
-  lastRingMs: number
-  lastFanMs: number
-  lastAimedMs: number
-  lastSpiralMs: number
+  phaseStartedAtMs: number
+  activeSpellId: string
+  activeSpellCycle: number
+  lastPatternFireMs: Record<string, number>
 }
 
 export interface ShooterSceneData {
   settings?: GameSettings
   mode?: GameMode
+  bossId?: BossId
 }
 
 export interface ClearBonusBreakdown {
