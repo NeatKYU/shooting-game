@@ -35,6 +35,10 @@ interface EnemyBullet {
   startY: number
   targetX: number
   targetY: number
+  velocityX: number
+  velocityY: number
+  distanceTraveled: number
+  totalDistance: number
   speed: number
   radius: number
   kind: BulletKind
@@ -435,7 +439,7 @@ export class ShooterScene extends Phaser.Scene {
       .filter((bullet) => bullet.lane === this.playerLane)
       .map((bullet) => ({
         bullet,
-        timeToImpact: (bullet.targetY - bullet.y) / bullet.speed,
+        timeToImpact: (bullet.totalDistance - bullet.distanceTraveled) / bullet.speed,
       }))
       .filter(({ timeToImpact }) => timeToImpact >= LATE_BLOCK_WINDOW_SEC && timeToImpact <= BLOCK_WINDOW_SEC)
       .sort((left, right) => Math.abs(left.timeToImpact) - Math.abs(right.timeToImpact))
@@ -665,7 +669,10 @@ export class ShooterScene extends Phaser.Scene {
     const startX = this.getBulletStartX()
     const startY = BULLET_START_Y
     const targetPosition = HIT_POSITIONS[lane]
+    const angle = Phaser.Math.Angle.Between(startX, startY, targetPosition.x, targetPosition.y)
+    const totalDistance = Phaser.Math.Distance.Between(startX, startY, targetPosition.x, targetPosition.y)
     const sprite = this.createEnemyBulletSprite(startX, startY, kind)
+    sprite.setRotation(angle + Math.PI / 2)
     const bullet: EnemyBullet = {
       id: this.nextId,
       lane,
@@ -675,6 +682,10 @@ export class ShooterScene extends Phaser.Scene {
       startY,
       targetX: targetPosition.x,
       targetY: targetPosition.y,
+      velocityX: Math.cos(angle),
+      velocityY: Math.sin(angle),
+      distanceTraveled: 0,
+      totalDistance,
       speed,
       radius,
       kind,
@@ -693,21 +704,20 @@ export class ShooterScene extends Phaser.Scene {
       const previousX = bullet.x
       const previousY = bullet.y
       bullet.ageMs += dt * 1000
-      bullet.y += bullet.speed * dt
-      const progress = Phaser.Math.Clamp((bullet.y - bullet.startY) / (bullet.targetY - bullet.startY), 0, 1)
-      bullet.x = Phaser.Math.Linear(bullet.startX, bullet.targetX, progress)
+      bullet.distanceTraveled = Math.min(bullet.distanceTraveled + bullet.speed * dt, bullet.totalDistance)
+      bullet.x = bullet.startX + bullet.velocityX * bullet.distanceTraveled
+      bullet.y = bullet.startY + bullet.velocityY * bullet.distanceTraveled
       bullet.sprite.setPosition(bullet.x, bullet.y)
       if (Phaser.Math.Distance.Squared(previousX, previousY, bullet.x, bullet.y) > 0.01) {
         bullet.sprite.setRotation(Phaser.Math.Angle.Between(previousX, previousY, bullet.x, bullet.y) + Math.PI / 2)
       }
       this.animateEnemyBulletSprite(bullet)
 
-      if (previousY < bullet.targetY && bullet.y >= bullet.targetY && bullet.lane === this.playerLane) {
-        this.hitPlayer(bullet)
-        continue
-      }
-
-      if (bullet.y > GAME_HEIGHT + 42) {
+      if (bullet.distanceTraveled >= bullet.totalDistance) {
+        if (bullet.lane === this.playerLane) {
+          this.hitPlayer(bullet)
+          continue
+        }
         this.removeEnemyBullet(bullet)
       }
     }
