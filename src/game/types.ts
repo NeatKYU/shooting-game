@@ -15,6 +15,9 @@ export type EnemyMovementPattern =
   | 'split-right'
 export type EnemyArchetypeId = 'scout' | 'wing' | 'turret' | 'elite'
 export type BulletPatternKind = 'aimed' | 'fan' | 'ring' | 'spiral' | 'delayed-burst'
+export type PartKind = 'bullet-core' | 'weapon-module'
+export type PartId = 'armor-piercer' | 'ricochet-core' | 'laser-module' | 'spark-module' | 'wing-module'
+export type DropKind = 'coin' | 'part'
 export type RebindTarget = keyof ControlSettings
 export type ArcadeOverlapObject = Parameters<Phaser.Types.Physics.Arcade.ArcadePhysicsCallback>[0]
 export type PhysicsImage = Phaser.GameObjects.Image & { body: Phaser.Physics.Arcade.Body }
@@ -44,7 +47,7 @@ export interface GameSettings {
 export interface DifficultyDefinition {
   id: DifficultyId
   label: LocalizedText
-  lives: number
+  startingHp: number
   enemyHpScale: number
   enemyBulletSpeed: number
   enemyFireRate: number
@@ -89,6 +92,7 @@ export interface EnemyArchetype {
   height: number
   hp: number
   score: number
+  coinReward: number
   fill: number
   stroke: number
   dropChance: number
@@ -124,12 +128,27 @@ export interface StageDefinition {
 
 export interface PlayerBullet {
   body: PhysicsRectangle
+  damage: number
+  pierce: number
+  bounces: number
+  chainLightning: boolean
   debug?: Phaser.GameObjects.Rectangle
 }
 
-export interface PowerUp {
+export interface PartDefinition {
+  id: PartId
+  kind: PartKind
+  label: LocalizedText
+  description: LocalizedText
+  color: number
+}
+
+export interface FieldDrop {
   body: PhysicsRectangle
   glow: Phaser.GameObjects.Ellipse
+  kind: DropKind
+  coinValue?: number
+  part?: PartDefinition
   spawnedAt: number
   nextTurnAt: number
   driftDirection: -1 | 1
@@ -139,6 +158,7 @@ export interface PowerUp {
 export interface EnemyBullet {
   body: PhysicsEllipse
   radius: number
+  damage: number
   grazed: boolean
   debug?: Phaser.GameObjects.Ellipse
 }
@@ -178,7 +198,7 @@ export interface ClearBonusBreakdown {
   clear: number
   noMiss: number
   noBomb: number
-  lives: number
+  hp: number
   bombs: number
   time: number
 }

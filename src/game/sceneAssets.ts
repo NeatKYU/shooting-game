@@ -32,6 +32,7 @@ export function preloadPlayerJet(scene: Phaser.Scene) {
 
 export function createPlayerShip(scene: Phaser.Scene, x: number, y: number, height: number) {
   const ship = scene.add.image(x, y, PLAYER_JET_KEY)
-  ship.setDisplaySize(Math.round(height * 0.75), height)
+  const displaySize = Math.round(height * 1.35)
+  ship.setDisplaySize(displaySize, displaySize)
   return ship
 }

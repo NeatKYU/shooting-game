@@ -4,7 +4,7 @@ export const DIFFICULTIES: Record<DifficultyId, DifficultyDefinition> = {
   novice: {
     id: 'novice',
     label: { ko: 'NOVICE', en: 'NOVICE' },
-    lives: 4,
+    startingHp: 8,
     enemyHpScale: 0.88,
     enemyBulletSpeed: 0.78,
     enemyFireRate: 0.88,
@@ -15,7 +15,7 @@ export const DIFFICULTIES: Record<DifficultyId, DifficultyDefinition> = {
   arcade: {
     id: 'arcade',
     label: { ko: 'ARCADE', en: 'ARCADE' },
-    lives: 3,
+    startingHp: 6,
     enemyHpScale: 1,
     enemyBulletSpeed: 1,
     enemyFireRate: 1,

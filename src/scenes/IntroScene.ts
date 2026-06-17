@@ -76,7 +76,6 @@ export class IntroScene extends Phaser.Scene {
     )
 
     const ship = createPlayerShip(this, -70, 318, 124)
-    ship.setAngle(90)
     this.tweens.add({
       targets: ship,
       x: GAME_WIDTH / 2,
