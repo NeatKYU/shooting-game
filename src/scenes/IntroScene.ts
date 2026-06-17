@@ -1,187 +1,335 @@
 import Phaser from 'phaser'
-import { GAME_HEIGHT, GAME_WIDTH, MONO_FONT, UI_FONT } from '../game/config'
-import { getSamuraiBaseTexture, preloadSamuraiAssets } from '../game/samuraiSprite'
+import { DIFFICULTIES } from '../data/difficulties'
+import { DEMO_STAGE } from '../data/demoStage'
+import { playTone } from '../game/audio'
+import { GAME_HEIGHT, GAME_WIDTH, UI_FONT } from '../game/config'
+import { keyLabel, text } from '../game/localization'
+import { addStarfield, createPlayerShip, preloadPlayerJet } from '../game/sceneAssets'
+import { cloneSettings, eventToKeyName, loadSettings, saveSettings } from '../game/settings'
+import type { GameMode, RebindTarget, ShooterSceneData } from '../game/types'
 
 export class IntroScene extends Phaser.Scene {
-  private startButton?: Phaser.GameObjects.Container
+  private settings = loadSettings()
+  private selectedMode: GameMode = 'demo'
+  private helpPanel?: Phaser.GameObjects.Container
+  private settingsPanel?: Phaser.GameObjects.Container
+  private rebindTarget?: RebindTarget
+  private menuTexts: Phaser.GameObjects.Text[] = []
 
   constructor() {
     super('IntroScene')
   }
 
   preload() {
-    preloadSamuraiAssets(this)
+    preloadPlayerJet(this)
   }
 
   create() {
+    this.settings = loadSettings()
+    this.selectedMode = 'demo'
+    this.rebindTarget = undefined
+    this.menuTexts = []
+    this.input.keyboard?.on('keydown', this.onKeyDown, this)
+    this.renderMenu()
+  }
+
+  shutdown() {
+    this.input.keyboard?.off('keydown', this.onKeyDown, this)
+  }
+
+  private renderMenu() {
+    this.tweens.killAll()
     this.children.removeAll(true)
-    this.createMenuTextures()
-    this.createBackdrop()
-    this.createHero()
-    this.createStartButton()
+    addStarfield(this, 140)
 
-    this.input.keyboard?.on('keydown-SPACE', this.startGame, this)
-    this.input.keyboard?.on('keydown-ENTER', this.startGame, this)
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
-      this.input.keyboard?.off('keydown-SPACE', this.startGame, this)
-      this.input.keyboard?.off('keydown-ENTER', this.startGame, this)
-    })
-  }
+    this.add.circle(378, 108, 52, 0x7dd3fc, 0.16)
+    this.add.circle(394, 95, 30, 0xf0abfc, 0.15)
+    this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT - 38, GAME_WIDTH, 76, 0x111827, 0.32)
 
-  private createBackdrop() {
-    this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x08111f)
-
-    const bands = [0x111827, 0x172554, 0x1e1b4b, 0x164e63, 0x0f766e, 0x1f2937]
-    bands.forEach((color, index) => {
-      this.add.rectangle(GAME_WIDTH / 2, (GAME_HEIGHT / bands.length) * (index + 0.5), GAME_WIDTH, GAME_HEIGHT / bands.length + 2, color, 0.4 + index * 0.06)
-    })
-
-    this.add.circle(364, 102, 48, 0xfffbeb, 0.86).setStrokeStyle(2, 0xfacc15, 0.28)
-    this.add.rectangle(GAME_WIDTH / 2, 472, GAME_WIDTH, 116, 0x111827, 0.58)
-    this.add.rectangle(GAME_WIDTH / 2, 530, GAME_WIDTH, 13, 0x78350f, 0.94)
-    this.add.rectangle(GAME_WIDTH / 2, 540, GAME_WIDTH, 5, 0xfacc15, 0.74)
-
-    for (let index = 0; index < 6; index += 1) {
-      const x = 48 + index * 78
-      this.add.rectangle(x, 612, 28, 178, index % 2 === 0 ? 0x334155 : 0x475569, 0.62)
-    }
-
-    for (let index = 0; index < 28; index += 1) {
-      const x = Phaser.Math.Between(18, GAME_WIDTH - 18)
-      const y = Phaser.Math.Between(24, 420)
-      this.add.circle(x, y, Phaser.Math.FloatBetween(0.8, 1.9), index % 6 === 0 ? 0xfacc15 : 0xe0f2fe, Phaser.Math.FloatBetween(0.18, 0.55))
-    }
-  }
-
-  private createHero() {
     this.add
-      .text(GAME_WIDTH / 2, 62, 'SAMURAI PARRY', {
-        align: 'center',
+      .text(36, 52, text({ ko: 'METEOR FRONT DEMO', en: 'METEOR FRONT DEMO' }, this.settings.language), {
         color: '#f8fafc',
         fontFamily: UI_FONT,
-        fontSize: '36px',
-        fontStyle: '900',
-      })
-      .setOrigin(0.5)
-      .setShadow(0, 5, '#020617', 8)
-
-    this.add
-      .text(GAME_WIDTH / 2, 102, '가면 무사의 시험', {
-        align: 'center',
-        color: '#facc15',
-        fontFamily: UI_FONT,
-        fontSize: '20px',
-        fontStyle: '900',
-      })
-      .setOrigin(0.5)
-
-    this.add
-      .text(GAME_WIDTH / 2, 132, 'LEVEL 1 BOSS FIGHT', {
-        align: 'center',
-        color: '#bfdbfe',
-        fontFamily: MONO_FONT,
-        fontSize: '13px',
+        fontSize: '35px',
         fontStyle: '800',
       })
-      .setOrigin(0.5)
+      .setShadow(0, 5, '#0f172a', 8)
 
-    const bossShadow = this.add.ellipse(GAME_WIDTH / 2, 296, 142, 28, 0x000000, 0.26)
-    const boss = this.add.image(GAME_WIDTH / 2, 246, 'intro-boss').setScale(3.1)
-    const samuraiShadow = this.add.ellipse(GAME_WIDTH / 2, 522, 86, 20, 0x000000, 0.32)
-    const samurai = this.add.image(GAME_WIDTH / 2, 486, getSamuraiBaseTexture('n')).setScale(2.25)
-    samurai.setDepth(8)
-
-    this.tweens.add({
-      targets: [boss, bossShadow],
-      y: '+=8',
-      duration: 1_600,
-      ease: 'Sine.easeInOut',
-      repeat: -1,
-      yoyo: true,
+    this.add.text(40, 104, text(DEMO_STAGE.subtitle, this.settings.language), {
+      color: '#bae6fd',
+      fontFamily: UI_FONT,
+      fontSize: '17px',
     })
-    this.tweens.add({
-      targets: [samurai, samuraiShadow],
-      y: '-=5',
-      duration: 1_250,
-      ease: 'Sine.easeInOut',
-      repeat: -1,
-      yoyo: true,
-    })
-  }
 
-  private createStartButton() {
-    const x = GAME_WIDTH / 2
-    const y = 620
-    const background = this.add.rectangle(0, 0, 246, 62, 0xfacc15, 0.98)
-    background.setStrokeStyle(2, 0xfffbeb, 0.95)
-    const label = this.add
-      .text(0, 0, '게임 시작', {
-        align: 'center',
-        color: '#111827',
+    this.add.text(
+      40,
+      130,
+      text(
+        { ko: '클래식 탄막 데모 - 1CC, 그레이즈, 랭크, 보스 연습', en: 'Classic bullet hell demo - 1CC, graze, rank, boss practice' },
+        this.settings.language,
+      ),
+      {
+        color: '#e0f2fe',
         fontFamily: UI_FONT,
-        fontSize: '24px',
-        fontStyle: '900',
-      })
-      .setOrigin(0.5)
+        fontSize: '15px',
+      },
+    )
 
-    this.startButton = this.add.container(x, y, [background, label])
-    this.startButton.setSize(246, 62)
-    this.startButton.setInteractive({ useHandCursor: true })
-    this.startButton.on('pointerover', () => {
-      background.setFillStyle(0xfffbeb, 1)
-      this.tweens.add({ targets: this.startButton, scale: 1.035, duration: 90, ease: 'Quad.easeOut' })
+    const ship = createPlayerShip(this, -70, 318, 124)
+    ship.setAngle(90)
+    this.tweens.add({
+      targets: ship,
+      x: GAME_WIDTH / 2,
+      duration: 1_250,
+      ease: 'Cubic.easeOut',
     })
-    this.startButton.on('pointerout', () => {
-      background.setFillStyle(0xfacc15, 0.98)
-      this.tweens.add({ targets: this.startButton, scale: 1, duration: 90, ease: 'Quad.easeOut' })
+    this.tweens.add({
+      targets: ship,
+      y: ship.y - 8,
+      duration: 1_300,
+      ease: 'Sine.easeInOut',
+      repeat: -1,
+      yoyo: true,
+      delay: 1_250,
     })
-    this.startButton.on('pointerdown', () => {
-      background.setFillStyle(0xf97316, 1)
-      this.startButton?.setScale(0.98)
-    })
-    this.startButton.on('pointerup', () => this.startGame())
-  }
 
-  private startGame() {
-    this.scene.start('ShooterScene')
-  }
-
-  private createMenuTextures() {
-    this.drawTexture('intro-boss', 72, 76, (pixel) => {
-      pixel(28, 3, 16, 7, 0xe5e7eb)
-      pixel(24, 10, 24, 15, 0xf8fafc)
-      pixel(29, 15, 5, 4, 0x111827)
-      pixel(39, 15, 5, 4, 0x111827)
-      pixel(32, 22, 8, 3, 0x991b1b)
-      pixel(18, 26, 36, 31, 0x111827)
-      pixel(23, 31, 26, 20, 0x1f2937)
-      pixel(10, 29, 12, 25, 0x7f1d1d)
-      pixel(50, 29, 12, 25, 0x7f1d1d)
-      pixel(16, 56, 14, 15, 0x111827)
-      pixel(43, 56, 14, 15, 0x111827)
-      pixel(11, 70, 19, 4, 0x020617)
-      pixel(41, 70, 19, 4, 0x020617)
-      pixel(55, 8, 5, 50, 0xe5e7eb)
-      pixel(52, 13, 3, 41, 0x64748b)
-      pixel(47, 23, 14, 5, 0x111827)
-      pixel(31, 31, 10, 12, 0xfacc15)
-      pixel(27, 43, 18, 5, 0xfacc15)
+    const menuX = 48
+    const menuY = 416
+    this.createMenuButton(menuX, menuY, this.startLabel(), 310, () => {
+      playTone(this.settings, 620, 90, 'triangle', 0.16)
+      this.scene.start('ShooterScene', {
+        settings: cloneSettings(this.settings),
+        mode: this.selectedMode,
+      } satisfies ShooterSceneData)
+    })
+    this.createMenuButton(menuX, menuY + 54, this.difficultyLabel(), 310, () => {
+      this.settings.difficulty = this.settings.difficulty === 'novice' ? 'arcade' : 'novice'
+      saveSettings(this.settings)
+      this.renderMenu()
+    })
+    this.createMenuButton(menuX, menuY + 108, this.modeLabel(), 310, () => {
+      this.selectedMode = this.selectedMode === 'demo' ? 'practice' : 'demo'
+      this.renderMenu()
+    })
+    this.createMenuButton(menuX, menuY + 162, text({ ko: '설정 / 키 변경', en: 'Settings / Keys' }, this.settings.language), 310, () => {
+      this.toggleSettingsPanel()
+    })
+    this.createMenuButton(menuX, menuY + 216, text({ ko: '하는 방법', en: 'How to Play' }, this.settings.language), 310, () => {
+      this.toggleHelpPanel()
     })
   }
 
-  private drawTexture(key: string, width: number, height: number, draw: (pixel: (x: number, y: number, width: number, height: number, color: number, alpha?: number) => void) => void) {
-    if (this.textures.exists(key)) {
+  private startLabel() {
+    return this.selectedMode === 'practice'
+      ? text({ ko: '보스 연습 시작', en: 'Start Boss Practice' }, this.settings.language)
+      : text({ ko: '데모 런 시작', en: 'Start Demo Run' }, this.settings.language)
+  }
+
+  private difficultyLabel() {
+    const difficulty = DIFFICULTIES[this.settings.difficulty]
+    return `${text({ ko: '난이도', en: 'Difficulty' }, this.settings.language)}: ${text(difficulty.label, this.settings.language)}`
+  }
+
+  private modeLabel() {
+    const mode = this.selectedMode === 'demo' ? { ko: '데모 런', en: 'Demo Run' } : { ko: '보스 연습', en: 'Boss Practice' }
+    return `${text({ ko: '모드', en: 'Mode' }, this.settings.language)}: ${text(mode, this.settings.language)}`
+  }
+
+  private createMenuButton(x: number, y: number, label: string, width: number, onClick: () => void) {
+    const button = this.add.container(x, y)
+    const plate = this.add.rectangle(0, 0, width, 42, 0x0f172a, 0.84)
+    plate.setOrigin(0, 0)
+    plate.setStrokeStyle(2, 0x38bdf8, 0.9)
+    plate.setInteractive({ useHandCursor: true })
+
+    const buttonText = this.add.text(20, 9, label, {
+      color: '#f8fafc',
+      fontFamily: UI_FONT,
+      fontSize: '19px',
+      fontStyle: '700',
+    })
+
+    plate.on('pointerover', () => {
+      plate.setFillStyle(0x164e63, 0.94)
+      plate.setStrokeStyle(2, 0x67e8f9, 1)
+    })
+    plate.on('pointerout', () => {
+      plate.setFillStyle(0x0f172a, 0.84)
+      plate.setStrokeStyle(2, 0x38bdf8, 0.9)
+    })
+    plate.on('pointerdown', onClick)
+
+    button.add([plate, buttonText])
+    this.menuTexts.push(buttonText)
+    return button
+  }
+
+  private toggleHelpPanel() {
+    this.settingsPanel?.destroy()
+    this.settingsPanel = undefined
+
+    if (this.helpPanel) {
+      this.helpPanel.destroy()
+      this.helpPanel = undefined
       return
     }
 
-    const graphics = this.add.graphics()
-    graphics.setVisible(false)
-    const pixel = (x: number, y: number, pixelWidth: number, pixelHeight: number, color: number, alpha = 1) => {
-      graphics.fillStyle(color, alpha)
-      graphics.fillRect(x, y, pixelWidth, pixelHeight)
+    const panel = this.add.container(40, 586)
+    const background = this.add.rectangle(0, 0, 400, 120, 0x020617, 0.86)
+    background.setOrigin(0, 0)
+    background.setStrokeStyle(2, 0xa78bfa, 0.85)
+
+    const title = this.add.text(22, 16, text({ ko: '하는 방법', en: 'How to Play' }, this.settings.language), {
+      color: '#f5d0fe',
+      fontFamily: UI_FONT,
+      fontSize: '20px',
+      fontStyle: '800',
+    })
+
+    const controls = this.settings.controls
+    const body = this.add.text(
+      22,
+      48,
+      text(
+        {
+          ko: `방향키/WASD 이동  ${keyLabel(controls.slow, 'ko')} 저속/히트박스\n${keyLabel(controls.fire, 'ko')} 발사  ${keyLabel(controls.bomb, 'ko')} 폭탄\n탄에 가까이 붙으면 그레이즈 보너스`,
+          en: `Arrows/WASD move  ${keyLabel(controls.slow, 'en')} focus/hitbox\n${keyLabel(controls.fire, 'en')} fire  ${keyLabel(controls.bomb, 'en')} bomb\nGraze bullets closely for score`,
+        },
+        this.settings.language,
+      ),
+      {
+        color: '#e5e7eb',
+        fontFamily: UI_FONT,
+        fontSize: '15px',
+        lineSpacing: 5,
+      },
+    )
+
+    panel.add([background, title, body])
+    this.helpPanel = panel
+  }
+
+  private toggleSettingsPanel() {
+    this.helpPanel?.destroy()
+    this.helpPanel = undefined
+
+    if (this.settingsPanel) {
+      this.settingsPanel.destroy()
+      this.settingsPanel = undefined
+      this.rebindTarget = undefined
+      return
     }
-    draw(pixel)
-    graphics.generateTexture(key, width, height)
-    graphics.destroy()
+
+    this.renderSettingsPanel()
+  }
+
+  private renderSettingsPanel() {
+    this.settingsPanel?.destroy()
+
+    const panel = this.add.container(36, 568)
+    const background = this.add.rectangle(0, 0, 408, 140, 0x020617, 0.9)
+    background.setOrigin(0, 0)
+    background.setStrokeStyle(2, 0x67e8f9, 0.9)
+    panel.add(background)
+
+    const rows = [
+      {
+        label: `${text({ ko: '언어', en: 'Language' }, this.settings.language)}: ${this.settings.language.toUpperCase()}`,
+        action: () => {
+          this.settings.language = this.settings.language === 'ko' ? 'en' : 'ko'
+          saveSettings(this.settings)
+          this.renderMenu()
+        },
+      },
+      {
+        label: `${text({ ko: '사운드', en: 'Sound' }, this.settings.language)}: ${Math.round(this.settings.soundVolume * 100)}%`,
+        action: () => {
+          this.settings.soundVolume = this.settings.soundVolume >= 0.9 ? 0 : this.settings.soundVolume + 0.25
+          saveSettings(this.settings)
+          playTone(this.settings, 520, 80, 'sine', 0.16)
+          this.renderSettingsPanel()
+        },
+      },
+      {
+        label: `${text({ ko: '흔들림', en: 'Shake' }, this.settings.language)}: ${this.settings.screenShake ? 'ON' : 'OFF'}`,
+        action: () => {
+          this.settings.screenShake = !this.settings.screenShake
+          saveSettings(this.settings)
+          this.renderSettingsPanel()
+        },
+      },
+      {
+        label: `${text({ ko: '히트박스', en: 'Hitbox' }, this.settings.language)}: ${this.settings.showHitbox ? 'ON' : 'FOCUS'}`,
+        action: () => {
+          this.settings.showHitbox = !this.settings.showHitbox
+          saveSettings(this.settings)
+          this.renderSettingsPanel()
+        },
+      },
+      {
+        label: `${text({ ko: '발사', en: 'Fire' }, this.settings.language)}: ${keyLabel(this.settings.controls.fire, this.settings.language)}`,
+        action: () => this.startRebind('fire'),
+      },
+      {
+        label: `${text({ ko: '저속', en: 'Focus' }, this.settings.language)}: ${keyLabel(this.settings.controls.slow, this.settings.language)}`,
+        action: () => this.startRebind('slow'),
+      },
+      {
+        label: `${text({ ko: '폭탄', en: 'Bomb' }, this.settings.language)}: ${keyLabel(this.settings.controls.bomb, this.settings.language)}`,
+        action: () => this.startRebind('bomb'),
+      },
+    ]
+
+    rows.forEach((row, index) => {
+      const x = index % 2 === 0 ? 18 : 212
+      const y = 14 + Math.floor(index / 2) * 31
+      const width = index === rows.length - 1 ? 178 : 174
+      const button = this.add.rectangle(x, y, width, 24, 0x0f172a, 0.92)
+      button.setOrigin(0, 0)
+      button.setStrokeStyle(1, 0x334155, 0.8)
+      button.setInteractive({ useHandCursor: true })
+      button.on('pointerdown', row.action)
+      const label = this.add.text(x + 8, y + 4, row.label, {
+        color: '#e5e7eb',
+        fontFamily: UI_FONT,
+        fontSize: '13px',
+      })
+      panel.add([button, label])
+    })
+
+    if (this.rebindTarget) {
+      const waiting = this.add.text(
+        20,
+        114,
+        text({ ko: '변경할 키를 누르세요...', en: 'Press a key to bind...' }, this.settings.language),
+        {
+          color: '#fde68a',
+          fontFamily: UI_FONT,
+          fontSize: '14px',
+          fontStyle: '700',
+        },
+      )
+      panel.add(waiting)
+    }
+
+    this.settingsPanel = panel
+  }
+
+  private startRebind(target: RebindTarget) {
+    this.rebindTarget = target
+    this.renderSettingsPanel()
+  }
+
+  private onKeyDown(event: KeyboardEvent) {
+    if (!this.rebindTarget) {
+      return
+    }
+
+    event.preventDefault()
+    this.settings.controls[this.rebindTarget] = eventToKeyName(event)
+    this.rebindTarget = undefined
+    saveSettings(this.settings)
+    playTone(this.settings, 680, 70, 'triangle', 0.14)
+    this.renderSettingsPanel()
   }
 }
