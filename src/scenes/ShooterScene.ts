@@ -102,6 +102,20 @@ interface ActiveLaser {
   nextDamageAt: number
 }
 
+interface PanelSelectableItem {
+  plate: Phaser.GameObjects.Rectangle
+  action: () => void
+  enabled: boolean
+  defaultFill: number
+  defaultAlpha: number
+  defaultStroke: number
+  defaultStrokeAlpha: number
+  selectedFill: number
+  selectedAlpha: number
+  selectedStroke: number
+  selectedStrokeAlpha: number
+}
+
 const PART_CATALOG: PartDefinition[] = [
   {
     id: 'armor-piercer',
@@ -183,6 +197,8 @@ export class ShooterScene extends Phaser.Scene {
   private resultPanel?: Phaser.GameObjects.Container
   private shopPanel?: Phaser.GameObjects.Container
   private partChoicePanel?: Phaser.GameObjects.Container
+  private shopItems: PanelSelectableItem[] = []
+  private partChoiceItems: PanelSelectableItem[] = []
   private playerBulletsGroup!: Phaser.Physics.Arcade.Group
   private powerUpsGroup!: Phaser.Physics.Arcade.Group
   private enemyBulletsGroup!: Phaser.Physics.Arcade.Group
@@ -207,6 +223,8 @@ export class ShooterScene extends Phaser.Scene {
   private weaponModules: PartDefinition[] = []
   private pendingPart?: PartDefinition
   private partChoiceOpenedAt = 0
+  private selectedShopIndex = 0
+  private selectedPartChoiceIndex = 1
   private runLevel = 1
   private nextStageEventIndex = 0
   private stageStartedAt = 0
@@ -344,6 +362,120 @@ export class ShooterScene extends Phaser.Scene {
       left: keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.A),
       right: keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.D),
     }
+    keyboard.on('keydown', this.onKeyDown, this)
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      keyboard.off('keydown', this.onKeyDown, this)
+    })
+  }
+
+  private onKeyDown(event: KeyboardEvent) {
+    if (this.isPartChoiceOpen && this.handlePanelSelectionKey(event, this.partChoiceItems, 'part-choice')) {
+      return
+    }
+
+    if (this.isShopOpen && this.handlePanelSelectionKey(event, this.shopItems, 'shop')) {
+      return
+    }
+  }
+
+  private handlePanelSelectionKey(event: KeyboardEvent, items: PanelSelectableItem[], panel: 'shop' | 'part-choice') {
+    if (items.length === 0) {
+      return false
+    }
+
+    if (event.code === 'ArrowLeft' || event.code === 'ArrowUp' || event.code === 'KeyA' || event.code === 'KeyW') {
+      event.preventDefault()
+      this.movePanelSelection(panel, -1)
+      return true
+    }
+
+    if (event.code === 'ArrowRight' || event.code === 'ArrowDown' || event.code === 'KeyD' || event.code === 'KeyS') {
+      event.preventDefault()
+      this.movePanelSelection(panel, 1)
+      return true
+    }
+
+    if (this.isConfirmKey(event.code)) {
+      event.preventDefault()
+      if (event.repeat) {
+        return true
+      }
+
+      const selectedIndex = panel === 'shop' ? this.selectedShopIndex : this.selectedPartChoiceIndex
+      const item = items[selectedIndex]
+      if (item?.enabled) {
+        item.action()
+      }
+      return true
+    }
+
+    return false
+  }
+
+  private movePanelSelection(panel: 'shop' | 'part-choice', step: number) {
+    if (panel === 'shop') {
+      this.selectedShopIndex = this.getNextEnabledPanelIndex(this.shopItems, this.selectedShopIndex, step)
+      this.updateShopSelection()
+      return
+    }
+
+    this.selectedPartChoiceIndex = this.getNextEnabledPanelIndex(this.partChoiceItems, this.selectedPartChoiceIndex, step)
+    this.updatePartChoiceSelection()
+  }
+
+  private getNextEnabledPanelIndex(items: PanelSelectableItem[], currentIndex: number, step: number) {
+    if (!items.some((item) => item.enabled)) {
+      return 0
+    }
+
+    let nextIndex = currentIndex
+    for (let offset = 0; offset < items.length; offset += 1) {
+      nextIndex = Phaser.Math.Wrap(nextIndex + step, 0, items.length)
+      if (items[nextIndex]?.enabled) {
+        return nextIndex
+      }
+    }
+
+    return currentIndex
+  }
+
+  private normalizePanelSelection(items: PanelSelectableItem[], currentIndex: number) {
+    if (items.length === 0) {
+      return 0
+    }
+
+    const clampedIndex = Phaser.Math.Clamp(currentIndex, 0, items.length - 1)
+    if (items[clampedIndex]?.enabled) {
+      return clampedIndex
+    }
+
+    return this.getNextEnabledPanelIndex(items, clampedIndex, 1)
+  }
+
+  private updatePanelSelection(items: PanelSelectableItem[], selectedIndex: number) {
+    items.forEach((item, index) => {
+      const isSelected = item.enabled && index === selectedIndex
+      item.plate.setFillStyle(isSelected ? item.selectedFill : item.defaultFill, isSelected ? item.selectedAlpha : item.defaultAlpha)
+      item.plate.setStrokeStyle(
+        2,
+        isSelected ? item.selectedStroke : item.defaultStroke,
+        isSelected ? item.selectedStrokeAlpha : item.defaultStrokeAlpha,
+      )
+    })
+  }
+
+  private updateShopSelection() {
+    this.selectedShopIndex = this.normalizePanelSelection(this.shopItems, this.selectedShopIndex)
+    this.updatePanelSelection(this.shopItems, this.selectedShopIndex)
+  }
+
+  private updatePartChoiceSelection() {
+    this.selectedPartChoiceIndex = this.normalizePanelSelection(this.partChoiceItems, this.selectedPartChoiceIndex)
+    this.updatePanelSelection(this.partChoiceItems, this.selectedPartChoiceIndex)
+  }
+
+  private isConfirmKey(code: string) {
+    return code === 'Enter' || code === 'NumpadEnter' || code === 'Space'
   }
 
   private createHud() {
@@ -612,6 +744,8 @@ export class ShooterScene extends Phaser.Scene {
     this.resultPanel = undefined
     this.shopPanel = undefined
     this.partChoicePanel = undefined
+    this.shopItems = []
+    this.partChoiceItems = []
     this.score = 0
     this.displayedBestScore = 0
     this.maxHp = this.difficulty.startingHp
@@ -625,6 +759,8 @@ export class ShooterScene extends Phaser.Scene {
     this.weaponModules = []
     this.pendingPart = undefined
     this.partChoiceOpenedAt = 0
+    this.selectedShopIndex = 0
+    this.selectedPartChoiceIndex = 1
     this.runLevel = 1
     this.nextStageEventIndex = 0
     this.stageStartedAt = 0
@@ -2079,6 +2215,7 @@ export class ShooterScene extends Phaser.Scene {
 
   private renderShop() {
     this.shopPanel?.destroy()
+    this.shopItems = []
 
     const attackCost = this.getAttackUpgradeCost()
     const hpCost = this.getHpUpgradeCost()
@@ -2120,6 +2257,7 @@ export class ShooterScene extends Phaser.Scene {
     panel.add([background, title, wallet, attackCard, hpCard, nextButton])
     panel.setDepth(50)
     this.shopPanel = panel
+    this.updateShopSelection()
   }
 
   private createShopCard(
@@ -2157,11 +2295,33 @@ export class ShooterScene extends Phaser.Scene {
       })
       .setOrigin(0.5)
 
+    const itemIndex = this.shopItems.length
+    this.shopItems.push({
+      plate,
+      action: options.onBuy,
+      enabled: canBuy,
+      defaultFill: canBuy ? 0x0f172a : 0x111827,
+      defaultAlpha: canBuy ? 0.94 : 0.64,
+      defaultStroke: canBuy ? 0x38bdf8 : 0x475569,
+      defaultStrokeAlpha: canBuy ? 0.9 : 0.5,
+      selectedFill: 0x164e63,
+      selectedAlpha: 0.98,
+      selectedStroke: 0x67e8f9,
+      selectedStrokeAlpha: 1,
+    })
+
     if (canBuy) {
       plate.setInteractive({ useHandCursor: true })
-      plate.on('pointerover', () => plate.setFillStyle(0x164e63, 0.98))
-      plate.on('pointerout', () => plate.setFillStyle(0x0f172a, 0.94))
-      plate.on('pointerdown', options.onBuy)
+      plate.on('pointerover', () => {
+        this.selectedShopIndex = itemIndex
+        this.updateShopSelection()
+      })
+      plate.on('pointerout', () => this.updateShopSelection())
+      plate.on('pointerdown', () => {
+        this.selectedShopIndex = itemIndex
+        this.updateShopSelection()
+        options.onBuy()
+      })
     }
 
     card.add([plate, title, body, action])
@@ -2181,9 +2341,30 @@ export class ShooterScene extends Phaser.Scene {
         fontStyle: '800',
       })
       .setOrigin(0.5)
-    plate.on('pointerover', () => plate.setFillStyle(0x0e7490, 1))
-    plate.on('pointerout', () => plate.setFillStyle(0x164e63, 0.96))
-    plate.on('pointerdown', onClick)
+    const itemIndex = this.shopItems.length
+    this.shopItems.push({
+      plate,
+      action: onClick,
+      enabled: true,
+      defaultFill: 0x164e63,
+      defaultAlpha: 0.96,
+      defaultStroke: 0x67e8f9,
+      defaultStrokeAlpha: 0.9,
+      selectedFill: 0x0e7490,
+      selectedAlpha: 1,
+      selectedStroke: 0xfef08a,
+      selectedStrokeAlpha: 1,
+    })
+    plate.on('pointerover', () => {
+      this.selectedShopIndex = itemIndex
+      this.updateShopSelection()
+    })
+    plate.on('pointerout', () => this.updateShopSelection())
+    plate.on('pointerdown', () => {
+      this.selectedShopIndex = itemIndex
+      this.updateShopSelection()
+      onClick()
+    })
     button.add([plate, buttonText])
     return button
   }
@@ -2230,6 +2411,8 @@ export class ShooterScene extends Phaser.Scene {
   private startNextWave() {
     this.shopPanel?.destroy()
     this.shopPanel = undefined
+    this.shopItems = []
+    this.selectedShopIndex = 0
     this.isShopOpen = false
     this.isStageClear = false
     this.runLevel += 1
@@ -2246,9 +2429,11 @@ export class ShooterScene extends Phaser.Scene {
     this.pendingPart = part
     this.isPartChoiceOpen = true
     this.partChoiceOpenedAt = this.time.now
+    this.selectedPartChoiceIndex = 1
     this.player.body.setVelocity(0, 0)
     this.physics.world.pause()
     this.partChoicePanel?.destroy()
+    this.partChoiceItems = []
 
     const current = part.kind === 'bullet-core' ? this.bulletCore : this.weaponModules[0]
     const panel = this.add.container(GAME_WIDTH / 2, 334)
@@ -2278,6 +2463,7 @@ export class ShooterScene extends Phaser.Scene {
     panel.add([background, title, keep, replace])
     panel.setDepth(60)
     this.partChoicePanel = panel
+    this.updatePartChoiceSelection()
   }
 
   private createPartChoiceCard(
@@ -2316,9 +2502,30 @@ export class ShooterScene extends Phaser.Scene {
         wordWrap: { width: 150 },
       })
       .setOrigin(0.5)
-    plate.on('pointerover', () => plate.setFillStyle(0x164e63, 0.98))
-    plate.on('pointerout', () => plate.setFillStyle(0x0f172a, 0.95))
-    plate.on('pointerdown', options.onChoose)
+    const itemIndex = this.partChoiceItems.length
+    this.partChoiceItems.push({
+      plate,
+      action: options.onChoose,
+      enabled: true,
+      defaultFill: 0x0f172a,
+      defaultAlpha: 0.95,
+      defaultStroke: color,
+      defaultStrokeAlpha: 0.86,
+      selectedFill: 0x164e63,
+      selectedAlpha: 0.98,
+      selectedStroke: 0x67e8f9,
+      selectedStrokeAlpha: 1,
+    })
+    plate.on('pointerover', () => {
+      this.selectedPartChoiceIndex = itemIndex
+      this.updatePartChoiceSelection()
+    })
+    plate.on('pointerout', () => this.updatePartChoiceSelection())
+    plate.on('pointerdown', () => {
+      this.selectedPartChoiceIndex = itemIndex
+      this.updatePartChoiceSelection()
+      options.onChoose()
+    })
     card.add([plate, title, name, body])
     return card
   }
@@ -2338,6 +2545,8 @@ export class ShooterScene extends Phaser.Scene {
     this.physics.world.resume()
     this.partChoicePanel?.destroy()
     this.partChoicePanel = undefined
+    this.partChoiceItems = []
+    this.selectedPartChoiceIndex = 1
   }
 
   private resumeStageClockAfterPartChoice() {

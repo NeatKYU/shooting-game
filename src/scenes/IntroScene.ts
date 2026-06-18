@@ -8,6 +8,11 @@ import { addStarfield, createPlayerShip, preloadPlayerJet } from '../game/sceneA
 import { cloneSettings, eventToKeyName, loadSettings, saveSettings } from '../game/settings'
 import type { GameMode, RebindTarget, ShooterSceneData } from '../game/types'
 
+interface SelectableItem {
+  plate: Phaser.GameObjects.Rectangle
+  action: () => void
+}
+
 export class IntroScene extends Phaser.Scene {
   private settings = loadSettings()
   private selectedMode: GameMode = 'demo'
@@ -15,6 +20,10 @@ export class IntroScene extends Phaser.Scene {
   private settingsPanel?: Phaser.GameObjects.Container
   private rebindTarget?: RebindTarget
   private menuTexts: Phaser.GameObjects.Text[] = []
+  private menuItems: SelectableItem[] = []
+  private settingsItems: SelectableItem[] = []
+  private selectedMenuIndex = 0
+  private selectedSettingsIndex = 0
 
   constructor() {
     super('IntroScene')
@@ -29,7 +38,14 @@ export class IntroScene extends Phaser.Scene {
     this.selectedMode = 'demo'
     this.rebindTarget = undefined
     this.menuTexts = []
+    this.menuItems = []
+    this.settingsItems = []
+    this.selectedMenuIndex = 0
+    this.selectedSettingsIndex = 0
     this.input.keyboard?.on('keydown', this.onKeyDown, this)
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.input.keyboard?.off('keydown', this.onKeyDown, this)
+    })
     this.renderMenu()
   }
 
@@ -40,6 +56,10 @@ export class IntroScene extends Phaser.Scene {
   private renderMenu() {
     this.tweens.killAll()
     this.children.removeAll(true)
+    this.helpPanel = undefined
+    this.settingsPanel = undefined
+    this.menuItems = []
+    this.settingsItems = []
     addStarfield(this, 140)
 
     this.add.circle(378, 108, 52, 0x7dd3fc, 0.16)
@@ -116,6 +136,8 @@ export class IntroScene extends Phaser.Scene {
     this.createMenuButton(menuX, menuY + 216, text({ ko: '하는 방법', en: 'How to Play' }, this.settings.language), 310, () => {
       this.toggleHelpPanel()
     })
+    this.selectedMenuIndex = Phaser.Math.Clamp(this.selectedMenuIndex, 0, this.menuItems.length - 1)
+    this.updateMenuSelection()
   }
 
   private startLabel() {
@@ -149,18 +171,31 @@ export class IntroScene extends Phaser.Scene {
     })
 
     plate.on('pointerover', () => {
-      plate.setFillStyle(0x164e63, 0.94)
-      plate.setStrokeStyle(2, 0x67e8f9, 1)
+      this.selectedMenuIndex = itemIndex
+      this.updateMenuSelection()
     })
     plate.on('pointerout', () => {
-      plate.setFillStyle(0x0f172a, 0.84)
-      plate.setStrokeStyle(2, 0x38bdf8, 0.9)
+      this.updateMenuSelection()
     })
-    plate.on('pointerdown', onClick)
+    plate.on('pointerdown', () => {
+      this.selectedMenuIndex = itemIndex
+      this.updateMenuSelection()
+      onClick()
+    })
 
     button.add([plate, buttonText])
     this.menuTexts.push(buttonText)
+    const itemIndex = this.menuItems.length
+    this.menuItems.push({ plate, action: onClick })
     return button
+  }
+
+  private updateMenuSelection() {
+    this.menuItems.forEach((item, index) => {
+      const isSelected = index === this.selectedMenuIndex
+      item.plate.setFillStyle(isSelected ? 0x164e63 : 0x0f172a, isSelected ? 0.94 : 0.84)
+      item.plate.setStrokeStyle(2, isSelected ? 0x67e8f9 : 0x38bdf8, isSelected ? 1 : 0.9)
+    })
   }
 
   private toggleHelpPanel() {
@@ -224,6 +259,7 @@ export class IntroScene extends Phaser.Scene {
 
   private renderSettingsPanel() {
     this.settingsPanel?.destroy()
+    this.settingsItems = []
 
     const panel = this.add.container(36, 568)
     const background = this.add.rectangle(0, 0, 408, 140, 0x020617, 0.9)
@@ -279,12 +315,23 @@ export class IntroScene extends Phaser.Scene {
       button.setOrigin(0, 0)
       button.setStrokeStyle(1, 0x334155, 0.8)
       button.setInteractive({ useHandCursor: true })
-      button.on('pointerdown', row.action)
+      const itemIndex = this.settingsItems.length
+      button.on('pointerover', () => {
+        this.selectedSettingsIndex = itemIndex
+        this.updateSettingsSelection()
+      })
+      button.on('pointerout', () => this.updateSettingsSelection())
+      button.on('pointerdown', () => {
+        this.selectedSettingsIndex = itemIndex
+        this.updateSettingsSelection()
+        row.action()
+      })
       const label = this.add.text(x + 8, y + 4, row.label, {
         color: '#e5e7eb',
         fontFamily: UI_FONT,
         fontSize: '13px',
       })
+      this.settingsItems.push({ plate: button, action: row.action })
       panel.add([button, label])
     })
 
@@ -304,6 +351,16 @@ export class IntroScene extends Phaser.Scene {
     }
 
     this.settingsPanel = panel
+    this.selectedSettingsIndex = Phaser.Math.Clamp(this.selectedSettingsIndex, 0, this.settingsItems.length - 1)
+    this.updateSettingsSelection()
+  }
+
+  private updateSettingsSelection() {
+    this.settingsItems.forEach((item, index) => {
+      const isSelected = index === this.selectedSettingsIndex
+      item.plate.setFillStyle(isSelected ? 0x164e63 : 0x0f172a, isSelected ? 0.98 : 0.92)
+      item.plate.setStrokeStyle(1, isSelected ? 0x67e8f9 : 0x334155, isSelected ? 1 : 0.8)
+    })
   }
 
   private startRebind(target: RebindTarget) {
@@ -312,15 +369,103 @@ export class IntroScene extends Phaser.Scene {
   }
 
   private onKeyDown(event: KeyboardEvent) {
-    if (!this.rebindTarget) {
+    if (this.rebindTarget) {
+      event.preventDefault()
+      this.settings.controls[this.rebindTarget] = eventToKeyName(event)
+      this.rebindTarget = undefined
+      saveSettings(this.settings)
+      playTone(this.settings, 680, 70, 'triangle', 0.14)
+      this.renderSettingsPanel()
       return
     }
 
-    event.preventDefault()
-    this.settings.controls[this.rebindTarget] = eventToKeyName(event)
-    this.rebindTarget = undefined
-    saveSettings(this.settings)
-    playTone(this.settings, 680, 70, 'triangle', 0.14)
-    this.renderSettingsPanel()
+    if (this.settingsPanel && this.handleSettingsKey(event)) {
+      return
+    }
+
+    if (event.code === 'Escape' && this.helpPanel) {
+      event.preventDefault()
+      this.toggleHelpPanel()
+      return
+    }
+
+    this.handleMenuKey(event)
+  }
+
+  private handleMenuKey(event: KeyboardEvent) {
+    if (this.menuItems.length === 0) {
+      return
+    }
+
+    if (event.code === 'ArrowUp' || event.code === 'KeyW') {
+      event.preventDefault()
+      this.selectedMenuIndex = Phaser.Math.Wrap(this.selectedMenuIndex - 1, 0, this.menuItems.length)
+      this.updateMenuSelection()
+      return
+    }
+
+    if (event.code === 'ArrowDown' || event.code === 'KeyS') {
+      event.preventDefault()
+      this.selectedMenuIndex = Phaser.Math.Wrap(this.selectedMenuIndex + 1, 0, this.menuItems.length)
+      this.updateMenuSelection()
+      return
+    }
+
+    if (this.isConfirmKey(event.code)) {
+      event.preventDefault()
+      this.menuItems[this.selectedMenuIndex]?.action()
+    }
+  }
+
+  private handleSettingsKey(event: KeyboardEvent) {
+    if (event.code === 'Escape') {
+      event.preventDefault()
+      this.toggleSettingsPanel()
+      return true
+    }
+
+    if (this.settingsItems.length === 0) {
+      return false
+    }
+
+    if (event.code === 'ArrowLeft' || event.code === 'KeyA') {
+      event.preventDefault()
+      this.selectedSettingsIndex = Phaser.Math.Wrap(this.selectedSettingsIndex - 1, 0, this.settingsItems.length)
+      this.updateSettingsSelection()
+      return true
+    }
+
+    if (event.code === 'ArrowRight' || event.code === 'KeyD') {
+      event.preventDefault()
+      this.selectedSettingsIndex = Phaser.Math.Wrap(this.selectedSettingsIndex + 1, 0, this.settingsItems.length)
+      this.updateSettingsSelection()
+      return true
+    }
+
+    if (event.code === 'ArrowUp' || event.code === 'KeyW') {
+      event.preventDefault()
+      this.selectedSettingsIndex = Phaser.Math.Wrap(this.selectedSettingsIndex - 2, 0, this.settingsItems.length)
+      this.updateSettingsSelection()
+      return true
+    }
+
+    if (event.code === 'ArrowDown' || event.code === 'KeyS') {
+      event.preventDefault()
+      this.selectedSettingsIndex = Phaser.Math.Wrap(this.selectedSettingsIndex + 2, 0, this.settingsItems.length)
+      this.updateSettingsSelection()
+      return true
+    }
+
+    if (this.isConfirmKey(event.code)) {
+      event.preventDefault()
+      this.settingsItems[this.selectedSettingsIndex]?.action()
+      return true
+    }
+
+    return false
+  }
+
+  private isConfirmKey(code: string) {
+    return code === 'Enter' || code === 'NumpadEnter' || code === 'Space'
   }
 }
