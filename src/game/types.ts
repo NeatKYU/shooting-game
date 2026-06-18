@@ -16,11 +16,18 @@ export type EnemyMovementPattern =
 export type EnemyArchetypeId = 'scout' | 'wing' | 'turret' | 'elite'
 export type BulletPatternKind = 'aimed' | 'fan' | 'ring' | 'spiral' | 'delayed-burst'
 export type PartKind = 'bullet-core' | 'weapon-module'
-export type PartId = 'armor-piercer' | 'ricochet-core' | 'laser-module' | 'spark-module' | 'wing-module'
+export type PartId =
+  | 'armor-piercer'
+  | 'flamethrower-core'
+  | 'splash-core'
+  | 'laser-module'
+  | 'spark-module'
+  | 'wing-module'
 export type DropKind = 'coin' | 'part'
 export type RebindTarget = keyof ControlSettings
 export type ArcadeOverlapObject = Parameters<Phaser.Types.Physics.Arcade.ArcadePhysicsCallback>[0]
 export type PhysicsImage = Phaser.GameObjects.Image & { body: Phaser.Physics.Arcade.Body }
+export type PhysicsSprite = Phaser.GameObjects.Sprite & { body: Phaser.Physics.Arcade.Body }
 export type PhysicsRectangle = Phaser.GameObjects.Rectangle & { body: Phaser.Physics.Arcade.Body }
 export type PhysicsEllipse = Phaser.GameObjects.Ellipse & { body: Phaser.Physics.Arcade.Body }
 
@@ -128,10 +135,17 @@ export interface StageDefinition {
 
 export interface PlayerBullet {
   body: PhysicsRectangle
+  visual?: Phaser.GameObjects.Sprite
   damage: number
   pierce: number
-  bounces: number
+  pierceDamageScale: number
+  splashBounces: number
   chainLightning: boolean
+  hitTargets: Set<Enemy | Boss>
+  spawnedAt: number
+  originX: number
+  originY: number
+  maxRange?: number
   debug?: Phaser.GameObjects.Rectangle
 }
 
@@ -141,10 +155,11 @@ export interface PartDefinition {
   label: LocalizedText
   description: LocalizedText
   color: number
+  iconKey?: string
 }
 
 export interface FieldDrop {
-  body: PhysicsRectangle
+  body: PhysicsRectangle | PhysicsImage
   glow: Phaser.GameObjects.Ellipse
   kind: DropKind
   coinValue?: number

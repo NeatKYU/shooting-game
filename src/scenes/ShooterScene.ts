@@ -23,7 +23,14 @@ import {
 import { text } from '../game/localization'
 import { formatScore, loadBestScore, saveBestScore } from '../game/score'
 import { ParallaxBackground, preloadParallaxBackground } from '../game/parallaxBackground'
-import { createPlayerShip, preloadPlayerJet } from '../game/sceneAssets'
+import {
+  PLAYER_BULLET_ANIM_KEY,
+  PLAYER_IDLE_ANIM_KEY,
+  PLAYER_MOVE_ANIM_KEY,
+  createPlayerBulletAnimation,
+  createPlayerShip,
+  preloadPlayerJet,
+} from '../game/sceneAssets'
 import { DEFAULT_SETTINGS, cloneSettings, keyNameToCode, loadSettings } from '../game/settings'
 import type {
   ArcadeOverlapObject,
@@ -37,6 +44,7 @@ import type {
   PartDefinition,
   PhysicsEllipse,
   PhysicsImage,
+  PhysicsSprite,
   PhysicsRectangle,
   PlayerBullet,
   ShooterSceneData,
@@ -55,6 +63,8 @@ const RUN_LEVEL_HP_SCALE = 0.18
 const RUN_LEVEL_BULLET_SPEED_SCALE = 0.08
 const RUN_LEVEL_REWARD_SCALE = 0.2
 const LASER_INTERVAL_MS = 620
+const LASER_DURATION_MS = 280
+const LASER_DAMAGE_TICK_MS = 90
 const WING_INTERVAL_MS = 310
 const SPARK_INTERVAL_MS = 540
 const COIN_MAGNET_RADIUS = 138
@@ -66,21 +76,52 @@ const PART_DROP_MAX_Y = GAME_HEIGHT - 76
 const SUPPORT_DRONE_OFFSET_X = 48
 const SUPPORT_DRONE_OFFSET_Y = 8
 const SUPPORT_DRONE_SIZE = 30
+const AMMO_ICON_DISPLAY_SIZE = 48
+const BASIC_BULLET_DISPLAY_WIDTH = 58
+const BASIC_BULLET_DISPLAY_HEIGHT = 29
+const FLAME_BULLET_RANGE = 245
+const FLAME_BULLET_SPEED = 430
+const SPLASH_CHAIN_RANGE = 165
+
+const AMMO_ICON_ASSETS = {
+  'armor-piercer': '/assets/ammo-armor-piercer.png',
+  'flamethrower-core': '/assets/ammo-flamethrower.png',
+  'splash-core': '/assets/ammo-splash.png',
+} as const
+
+type BulletCoreId = keyof typeof AMMO_ICON_ASSETS
+
+interface ActiveLaser {
+  graphics: Phaser.GameObjects.Graphics
+  sourceIndex: number
+  expiresAt: number
+  nextDamageAt: number
+}
 
 const PART_CATALOG: PartDefinition[] = [
   {
     id: 'armor-piercer',
     kind: 'bullet-core',
     label: { ko: '철갑탄', en: 'Armor Piercer' },
-    description: { ko: '기본탄 피해 +1, 적 1회 관통', en: '+1 bullet damage, pierces once' },
+    description: { ko: '적을 관통하며 뒤쪽 적에게 감소 피해', en: 'Pierces enemies and carries reduced damage' },
     color: 0xf97316,
+    iconKey: 'ammo-icon-armor-piercer',
   },
   {
-    id: 'ricochet-core',
+    id: 'flamethrower-core',
     kind: 'bullet-core',
-    label: { ko: '반사탄', en: 'Ricochet Core' },
-    description: { ko: '기본탄이 좌우 벽에 1회 반사', en: 'Bullets bounce once off side walls' },
+    label: { ko: '화염방사탄', en: 'Flamethrower Core' },
+    description: { ko: '짧은 사거리의 전방 방사 화염', en: 'Short-range forward flame fan' },
+    color: 0xf97316,
+    iconKey: 'ammo-icon-flamethrower-core',
+  },
+  {
+    id: 'splash-core',
+    kind: 'bullet-core',
+    label: { ko: '스플래쉬탄', en: 'Splash Core' },
+    description: { ko: '명중 시 주변 적에게 연쇄 피해', en: 'Chains to nearby enemies on hit' },
     color: 0x38bdf8,
+    iconKey: 'ammo-icon-splash-core',
   },
   {
     id: 'laser-module',
@@ -110,7 +151,7 @@ export class ShooterScene extends Phaser.Scene {
   private mode: GameMode = 'demo'
   private stage = DEMO_STAGE
   private difficulty = DIFFICULTIES.novice
-  private player!: PhysicsImage
+  private player!: PhysicsSprite
   private background!: ParallaxBackground
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys
   private fireKey!: Phaser.Input.Keyboard.Key
@@ -131,7 +172,10 @@ export class ShooterScene extends Phaser.Scene {
   private bossBarFill!: Phaser.GameObjects.Rectangle
   private bossNameText!: Phaser.GameObjects.Text
   private weaponText!: Phaser.GameObjects.Text
-  private supportDrones: Phaser.GameObjects.Image[] = []
+  private bulletCoreIconFrame!: Phaser.GameObjects.Rectangle
+  private bulletCoreIconGlow!: Phaser.GameObjects.Ellipse
+  private bulletCoreIcon?: Phaser.GameObjects.Image
+  private supportDrones: Phaser.GameObjects.Sprite[] = []
   private resultPanel?: Phaser.GameObjects.Container
   private shopPanel?: Phaser.GameObjects.Container
   private partChoicePanel?: Phaser.GameObjects.Container
@@ -144,6 +188,7 @@ export class ShooterScene extends Phaser.Scene {
   private powerUps: FieldDrop[] = []
   private enemyBullets: EnemyBullet[] = []
   private enemies: Enemy[] = []
+  private activeLasers: ActiveLaser[] = []
   private boss?: Boss
   private score = 0
   private displayedBestScore = 0
@@ -157,6 +202,7 @@ export class ShooterScene extends Phaser.Scene {
   private bulletCore?: PartDefinition
   private weaponModules: PartDefinition[] = []
   private pendingPart?: PartDefinition
+  private partChoiceOpenedAt = 0
   private runLevel = 1
   private nextStageEventIndex = 0
   private stageStartedAt = 0
@@ -191,13 +237,19 @@ export class ShooterScene extends Phaser.Scene {
   preload() {
     preloadPlayerJet(this)
     preloadParallaxBackground(this)
+    Object.entries(AMMO_ICON_ASSETS).forEach(([partId, asset]) => {
+      const key = this.getAmmoIconKey(partId as BulletCoreId)
+      if (!this.textures.exists(key)) {
+        this.load.image(key, asset)
+      }
+    })
   }
 
   create() {
     this.resetGameState()
     this.background = new ParallaxBackground(this)
 
-    this.player = createPlayerShip(this, GAME_WIDTH / 2, GAME_HEIGHT - 74, 76) as PhysicsImage
+    this.player = createPlayerShip(this, GAME_WIDTH / 2, GAME_HEIGHT - 74, 76) as PhysicsSprite
     this.createPhysicsBodies()
     this.createInput()
     this.createHud()
@@ -310,7 +362,7 @@ export class ShooterScene extends Phaser.Scene {
       fontSize: '14px',
     })
 
-    this.weaponText = this.add.text(20, 102, 'ATK 1  CORE -  MOD -/-', {
+    this.weaponText = this.add.text(20, 102, 'ATK 1  MOD -/-', {
       color: '#fde68a',
       fontFamily: MONO_FONT,
       fontSize: '12px',
@@ -348,6 +400,23 @@ export class ShooterScene extends Phaser.Scene {
       })
       .setOrigin(0.5)
       .setDepth(32)
+
+    const ammoIconX = GAME_WIDTH / 2 + 180
+    const ammoIconY = GAME_HEIGHT - 72
+    this.bulletCoreIconGlow = this.add.ellipse(ammoIconX, ammoIconY, 62, 62, 0x38bdf8, 0.1)
+    this.bulletCoreIconGlow.setDepth(33)
+    this.bulletCoreIconFrame = this.add.rectangle(ammoIconX, ammoIconY, 54, 54, 0x020617, 0.62)
+    this.bulletCoreIconFrame.setStrokeStyle(2, 0x64748b, 0.72)
+    this.bulletCoreIconFrame.setDepth(34)
+    this.tweens.add({
+      targets: this.bulletCoreIconGlow,
+      alpha: 0.32,
+      scale: 1.12,
+      duration: 720,
+      ease: 'Sine.easeInOut',
+      repeat: -1,
+      yoyo: true,
+    })
 
     this.bombIcons = []
     for (let index = 0; index < MAX_BOMBS; index += 1) {
@@ -446,6 +515,40 @@ export class ShooterScene extends Phaser.Scene {
     return physicsBody
   }
 
+  private enableImagePhysics(
+    body: Phaser.GameObjects.Image,
+    group: Phaser.Physics.Arcade.Group,
+    width: number,
+    height: number,
+  ) {
+    const physicsBody = this.physics.add.existing(body) as PhysicsImage
+    physicsBody.body.setAllowGravity(false)
+    physicsBody.body.setImmovable(true)
+    physicsBody.body.setSize(width, height, true)
+    group.add(physicsBody)
+    return physicsBody
+  }
+
+  private getAmmoIconKey(partId: BulletCoreId) {
+    return `ammo-icon-${partId}`
+  }
+
+  private getPartIconKey(part?: PartDefinition) {
+    if (!part?.iconKey) {
+      return undefined
+    }
+
+    return part.iconKey
+  }
+
+  private setImageHeightPreservingAspect(image: Phaser.GameObjects.Image, height: number) {
+    const source = image.texture.getSourceImage() as { width?: number; height?: number }
+    const sourceWidth = source.width ?? image.width
+    const sourceHeight = source.height ?? image.height
+    const width = sourceHeight > 0 ? height * (sourceWidth / sourceHeight) : height
+    image.setDisplaySize(width, height)
+  }
+
   private getPhysicsGameObject(object: ArcadeOverlapObject) {
     if ('body' in object) {
       return object
@@ -459,6 +562,7 @@ export class ShooterScene extends Phaser.Scene {
     this.powerUps = []
     this.enemyBullets = []
     this.enemies = []
+    this.activeLasers = []
     this.bombIcons = []
     this.supportDrones = []
     this.boss = undefined
@@ -477,6 +581,7 @@ export class ShooterScene extends Phaser.Scene {
     this.bulletCore = undefined
     this.weaponModules = []
     this.pendingPart = undefined
+    this.partChoiceOpenedAt = 0
     this.runLevel = 1
     this.nextStageEventIndex = 0
     this.stageStartedAt = 0
@@ -534,32 +639,135 @@ export class ShooterScene extends Phaser.Scene {
       (this.player.x <= 28 && vx < 0) || (this.player.x >= GAME_WIDTH - 28 && vx > 0) ? 0 : vx,
       (this.player.y <= 128 && vy < 0) || (this.player.y >= GAME_HEIGHT - 30 && vy > 0) ? 0 : vy,
     )
+
+    this.updatePlayerAnimation(dx)
+  }
+
+  private updatePlayerAnimation(dx: number) {
+    const movingHorizontally = dx !== 0
+    const nextAnimation = movingHorizontally ? PLAYER_MOVE_ANIM_KEY : PLAYER_IDLE_ANIM_KEY
+
+    this.player.setFlipX(dx < 0)
+    if (this.player.anims.currentAnim?.key !== nextAnimation) {
+      this.player.play(nextAnimation)
+    }
   }
 
   private fireBullet() {
+    if (this.bulletCore?.id === 'flamethrower-core') {
+      this.fireFlamethrowerBurst()
+      playTone(this.settings, 300, 55, 'sawtooth', 0.055)
+      return
+    }
+
     this.createPlayerBullet(this.player.x, this.player.y - 42, -Math.PI / 2, this.getBulletDamage())
     playTone(this.settings, 720, 35, 'square', 0.035)
   }
 
-  private createPlayerBullet(x: number, y: number, angle: number, damage: number, moduleShot = false) {
+  private fireFlamethrowerBurst() {
+    const count = 5
+    const spread = 0.44
+    for (let index = 0; index < count; index += 1) {
+      const offset = Phaser.Math.Linear(-spread, spread, index / (count - 1))
+      const damage = Math.max(1, this.attackPower + (index === 2 ? 1 : 0))
+      const bullet = this.createPlayerBullet(
+        this.player.x + offset * 16,
+        this.player.y - 36,
+        -Math.PI / 2 + offset,
+        damage,
+        false,
+        {
+          color: index % 2 === 0 ? 0xfb923c : 0xef4444,
+          height: 17,
+          width: 10,
+          speed: FLAME_BULLET_SPEED + Phaser.Math.Between(-30, 24),
+          maxRange: FLAME_BULLET_RANGE,
+          stroke: 0xfef3c7,
+        },
+      )
+      bullet.body.setAlpha(0.9)
+    }
+  }
+
+  private createPlayerBullet(
+    x: number,
+    y: number,
+    angle: number,
+    damage: number,
+    moduleShot = false,
+    options?: { color?: number; width?: number; height?: number; speed?: number; maxRange?: number; stroke?: number },
+  ) {
     const color = moduleShot ? 0xa78bfa : this.bulletCore?.color ?? 0xfacc15
-    const body = this.enableRectanglePhysics(this.add.rectangle(x, y, moduleShot ? 5 : 7, 22, color), this.playerBulletsGroup, 7, 24)
-    body.setStrokeStyle(1, moduleShot ? 0xddd6fe : 0xfef08a)
+    const width = options?.width ?? (moduleShot ? 5 : 7)
+    const height = options?.height ?? 22
+    const body = this.enableRectanglePhysics(
+      this.add.rectangle(x, y, width, height, options?.color ?? color),
+      this.playerBulletsGroup,
+      Math.max(7, width),
+      Math.max(12, height),
+    )
+    body.setStrokeStyle(1, options?.stroke ?? (moduleShot ? 0xddd6fe : 0xfef08a))
     body.setRotation(angle + Math.PI / 2)
-    body.body.setVelocity(Math.cos(angle) * PLAYER_BULLET_SPEED, Math.sin(angle) * PLAYER_BULLET_SPEED)
-    const debug = this.createDebugRect(body.x, body.y, 7, 24, 0x22d3ee)
-    this.bullets.push({
+    const visual = this.createPlayerBulletVisual(x, y, angle, moduleShot, options)
+    if (visual) {
+      body.setAlpha(0)
+    }
+    const speed = options?.speed ?? PLAYER_BULLET_SPEED
+    body.body.setVelocity(Math.cos(angle) * speed, Math.sin(angle) * speed)
+    const debug = this.createDebugRect(body.x, body.y, Math.max(7, width), Math.max(12, height), 0x22d3ee)
+    const bullet: PlayerBullet = {
       body,
       damage,
-      pierce: this.bulletCore?.id === 'armor-piercer' && !moduleShot ? 1 : 0,
-      bounces: this.bulletCore?.id === 'ricochet-core' && !moduleShot ? 1 : 0,
+      pierce: this.bulletCore?.id === 'armor-piercer' && !moduleShot ? this.getArmorPierceCount() : 0,
+      pierceDamageScale: this.bulletCore?.id === 'armor-piercer' && !moduleShot ? this.getArmorPierceDamageScale() : 1,
+      splashBounces: this.bulletCore?.id === 'splash-core' && !moduleShot ? this.getSplashBounceCount() : 0,
       chainLightning: this.hasModule('spark-module') && !moduleShot,
+      hitTargets: new Set(),
+      spawnedAt: this.time.now,
+      originX: x,
+      originY: y,
+      maxRange: options?.maxRange,
       debug,
-    })
+      visual,
+    }
+    this.bullets.push(bullet)
+    return bullet
+  }
+
+  private createPlayerBulletVisual(
+    x: number,
+    y: number,
+    angle: number,
+    moduleShot: boolean,
+    options?: { color?: number; width?: number; height?: number; speed?: number; maxRange?: number; stroke?: number },
+  ) {
+    if (moduleShot || options?.maxRange) {
+      return undefined
+    }
+
+    createPlayerBulletAnimation(this)
+    const visual = this.add.sprite(x, y, 'player-basic-bullet-frame-0')
+    visual.setDisplaySize(BASIC_BULLET_DISPLAY_WIDTH, BASIC_BULLET_DISPLAY_HEIGHT)
+    visual.setRotation(angle)
+    visual.setDepth(9)
+    visual.play(PLAYER_BULLET_ANIM_KEY)
+    return visual
   }
 
   private getBulletDamage() {
     return this.attackPower + (this.bulletCore?.id === 'armor-piercer' ? 1 : 0)
+  }
+
+  private getArmorPierceCount() {
+    return Math.min(4, 1 + Math.floor((this.runLevel - 1) / 2))
+  }
+
+  private getArmorPierceDamageScale() {
+    return Math.min(0.9, 0.65 + this.runLevel * 0.05)
+  }
+
+  private getSplashBounceCount() {
+    return Math.min(5, 1 + Math.floor((this.runLevel - 1) / 2))
   }
 
   private hasModule(id: PartDefinition['id']) {
@@ -568,10 +776,11 @@ export class ShooterScene extends Phaser.Scene {
 
   private updateWeaponModules(time: number) {
     this.updateSupportDrones()
+    this.updateActiveLasers(time)
 
     if (this.hasModule('laser-module') && time - this.lastLaserShot >= LASER_INTERVAL_MS) {
       this.lastLaserShot = time
-      this.getSupportDronePositions().forEach((position) => this.fireLaserModule(position.x, position.y))
+      this.getSupportDronePositions().forEach((_position, index) => this.fireLaserModule(index))
     }
 
     if (this.hasModule('wing-module') && time - this.lastWingShot >= WING_INTERVAL_MS) {
@@ -624,23 +833,57 @@ export class ShooterScene extends Phaser.Scene {
     ] as const
   }
 
-  private fireLaserModule(x: number, y: number) {
-    const topY = 30
+  private fireLaserModule(sourceIndex: number) {
     const beam = this.add.graphics()
     beam.setDepth(9)
+    this.activeLasers.push({
+      graphics: beam,
+      sourceIndex,
+      expiresAt: this.time.now + LASER_DURATION_MS,
+      nextDamageAt: this.time.now,
+    })
+    this.time.delayedCall(LASER_DURATION_MS, () => {
+      this.tweens.add({
+        targets: beam,
+        alpha: 0,
+        duration: 150,
+        onComplete: () => beam.destroy(),
+      })
+    })
+  }
+
+  private updateActiveLasers(time: number) {
+    this.activeLasers = this.activeLasers.filter((laser) => {
+      if (!laser.graphics.active) {
+        return false
+      }
+
+      const positions = this.getSupportDronePositions()
+      const source = positions[laser.sourceIndex]
+      if (!source || time > laser.expiresAt) {
+        return false
+      }
+
+      this.drawLaserBeam(laser.graphics, source.x, source.y)
+      if (time >= laser.nextDamageAt) {
+        laser.nextDamageAt = time + LASER_DAMAGE_TICK_MS
+        this.damageLaserTargets(source.x, source.y)
+      }
+
+      return true
+    })
+  }
+
+  private drawLaserBeam(beam: Phaser.GameObjects.Graphics, x: number, y: number) {
+    const topY = 30
+    beam.clear()
     beam.lineStyle(12, 0xef4444, 0.42)
     beam.lineBetween(x, y, x, topY)
     beam.lineStyle(4, 0xfecaca, 0.96)
     beam.lineBetween(x, y, x, topY)
-    this.time.delayedCall(140, () => {
-      this.tweens.add({
-        targets: beam,
-        alpha: 0,
-        duration: 180,
-        onComplete: () => beam.destroy(),
-      })
-    })
+  }
 
+  private damageLaserTargets(x: number, y: number) {
     const laserDamage = this.attackPower + 1
     this.enemies.forEach((enemy) => {
       if (Math.abs(enemy.body.x - x) <= enemy.archetype.width / 2 + 8 && enemy.body.y < y) {
@@ -761,10 +1004,26 @@ export class ShooterScene extends Phaser.Scene {
 
   private spawnDrop(x: number, y: number, kind: FieldDrop['kind'], coinValue?: number, part?: PartDefinition) {
     const color = kind === 'coin' ? 0xfacc15 : part?.color ?? 0x38bdf8
-    const glow = this.add.ellipse(x, y, kind === 'coin' ? 16 : 20, kind === 'coin' ? 16 : 20, color, 0.18)
-    const body = this.enableRectanglePhysics(this.add.rectangle(x, y, kind === 'coin' ? 10 : 13, kind === 'coin' ? 10 : 13, color, 0.95), this.powerUpsGroup, 14, 14)
-    body.setAngle(45)
-    body.setStrokeStyle(2, kind === 'coin' ? 0xfef08a : 0xe0f2fe, 0.95)
+    const iconKey = this.getPartIconKey(part)
+    const isIconDrop = kind === 'part' && iconKey
+    const glow = this.add.ellipse(x, y, isIconDrop ? 46 : kind === 'coin' ? 16 : 20, isIconDrop ? 46 : kind === 'coin' ? 16 : 20, color, 0.18)
+    glow.setDepth(13)
+    const body = isIconDrop
+      ? this.enableImagePhysics(this.add.image(x, y, iconKey), this.powerUpsGroup, 28, 34)
+      : this.enableRectanglePhysics(
+          this.add.rectangle(x, y, kind === 'coin' ? 10 : 13, kind === 'coin' ? 10 : 13, color, 0.95),
+          this.powerUpsGroup,
+          14,
+          14,
+        )
+    body.setDepth(14)
+    if (isIconDrop) {
+      this.setImageHeightPreservingAspect(body as Phaser.GameObjects.Image, 46)
+    } else {
+      const rectangleBody = body as PhysicsRectangle
+      body.setAngle(45)
+      rectangleBody.setStrokeStyle(2, kind === 'coin' ? 0xfef08a : 0xe0f2fe, 0.95)
+    }
     const driftDirection = Math.random() < 0.5 ? -1 : 1
     if (kind === 'coin') {
       body.body.setVelocity(driftDirection * POWER_UP_DRIFT_SPEED, POWER_UP_SPEED)
@@ -774,16 +1033,37 @@ export class ShooterScene extends Phaser.Scene {
         Phaser.Math.Between(70, 130) * (Math.random() < 0.5 ? -1 : 1),
       )
     }
-    const debug = this.createDebugRect(body.x, body.y, 14, 14, color)
+    const debug = this.createDebugRect(body.x, body.y, isIconDrop ? 28 : 14, isIconDrop ? 34 : 14, color)
 
-    this.tweens.add({
-      targets: [body, glow],
-      scale: 1.18,
-      duration: 520,
-      ease: 'Sine.easeInOut',
-      repeat: -1,
-      yoyo: true,
-    })
+    if (isIconDrop) {
+      this.tweens.add({
+        targets: glow,
+        scale: 1.16,
+        alpha: 0.34,
+        duration: 520,
+        ease: 'Sine.easeInOut',
+        repeat: -1,
+        yoyo: true,
+      })
+      this.tweens.add({
+        targets: body,
+        scaleX: body.scaleX * 1.08,
+        scaleY: body.scaleY * 1.08,
+        duration: 520,
+        ease: 'Sine.easeInOut',
+        repeat: -1,
+        yoyo: true,
+      })
+    } else {
+      this.tweens.add({
+        targets: [body, glow],
+        scale: 1.18,
+        duration: 520,
+        ease: 'Sine.easeInOut',
+        repeat: -1,
+        yoyo: true,
+      })
+    }
 
     this.powerUps.push({
       body,
@@ -880,13 +1160,19 @@ export class ShooterScene extends Phaser.Scene {
 
   private updateBullets() {
     this.bullets = this.bullets.filter((bullet) => {
+      this.syncPlayerBulletVisual(bullet)
       this.syncDebugRect(bullet.debug, bullet.body)
 
-      if (bullet.bounces > 0 && (bullet.body.x <= 8 || bullet.body.x >= GAME_WIDTH - 8)) {
-        bullet.bounces -= 1
-        bullet.body.body.setVelocityX(-bullet.body.body.velocity.x)
-        bullet.body.x = Phaser.Math.Clamp(bullet.body.x, 8, GAME_WIDTH - 8)
-        createBurst(this, bullet.body.x, bullet.body.y, 0x38bdf8, 3)
+      if (bullet.maxRange) {
+        const traveled = Phaser.Math.Distance.Between(bullet.originX, bullet.originY, bullet.body.x, bullet.body.y)
+        const alpha = Phaser.Math.Clamp(1 - traveled / bullet.maxRange, 0.18, 0.92)
+        bullet.body.setAlpha(alpha)
+        bullet.visual?.setAlpha(alpha)
+        if (traveled >= bullet.maxRange) {
+          createBurst(this, bullet.body.x, bullet.body.y, 0xfb923c, 3)
+          this.destroyPlayerBullet(bullet)
+          return false
+        }
       }
 
       if (
@@ -901,6 +1187,14 @@ export class ShooterScene extends Phaser.Scene {
 
       return true
     })
+  }
+
+  private syncPlayerBulletVisual(bullet: PlayerBullet) {
+    if (!bullet.visual?.active) {
+      return
+    }
+
+    bullet.visual.setPosition(bullet.body.x, bullet.body.y)
   }
 
   private updatePowerUps() {
@@ -1220,13 +1514,23 @@ export class ShooterScene extends Phaser.Scene {
       return
     }
 
+    if (bullet.hitTargets.has(enemy)) {
+      return
+    }
+    bullet.hitTargets.add(enemy)
+
     enemy.hp -= bullet.damage
     if (bullet.chainLightning) {
       this.triggerSparkChain(enemy.body.x, enemy.body.y, bullet.damage)
     }
+    if (bullet.splashBounces > 0) {
+      this.triggerSplashChain(enemy.body.x, enemy.body.y, bullet.damage, bullet.splashBounces, new Set([enemy]))
+    }
 
     if (bullet.pierce > 0) {
       bullet.pierce -= 1
+      bullet.damage = Math.max(1, Math.ceil(bullet.damage * bullet.pierceDamageScale))
+      createBurst(this, enemy.body.x, enemy.body.y, 0xf97316, 3)
     } else {
       this.bullets = this.bullets.filter((item) => item !== bullet)
       this.destroyPlayerBullet(bullet)
@@ -1243,6 +1547,11 @@ export class ShooterScene extends Phaser.Scene {
     if (!bullet || !this.boss) {
       return
     }
+
+    if (bullet.hitTargets.has(this.boss)) {
+      return
+    }
+    bullet.hitTargets.add(this.boss)
 
     this.bullets = this.bullets.filter((item) => item !== bullet)
     this.destroyPlayerBullet(bullet)
@@ -1342,6 +1651,52 @@ export class ShooterScene extends Phaser.Scene {
       line.setDepth(12)
       this.tweens.add({ targets: line, alpha: 0, duration: 100, onComplete: () => line.destroy() })
       this.damageBoss(Math.max(1, Math.floor(damage / 2)))
+    }
+  }
+
+  private triggerSplashChain(x: number, y: number, damage: number, remainingBounces: number, visited: Set<Enemy | Boss>) {
+    if (remainingBounces <= 0) {
+      return
+    }
+
+    const nextDamage = Math.max(1, Math.ceil(damage * 0.72))
+    const target = this.enemies
+      .filter((enemy) => enemy.hp > 0 && !visited.has(enemy))
+      .map((enemy) => ({
+        enemy,
+        distance: Phaser.Math.Distance.Between(x, y, enemy.body.x, enemy.body.y),
+      }))
+      .filter((item) => item.distance <= SPLASH_CHAIN_RANGE)
+      .sort((a, b) => a.distance - b.distance)[0]?.enemy
+
+    if (target) {
+      visited.add(target)
+      const targetX = target.body.x
+      const targetY = target.body.y
+      const line = this.add.line(0, 0, x, y, targetX, targetY, 0x38bdf8, 0.82)
+      line.setOrigin(0, 0)
+      line.setDepth(12)
+      this.tweens.add({ targets: line, alpha: 0, duration: 130, onComplete: () => line.destroy() })
+      target.hp -= nextDamage
+      createBurst(this, targetX, targetY, 0x38bdf8, 5)
+      if (target.hp <= 0) {
+        this.defeatEnemy(target)
+      }
+      this.triggerSplashChain(targetX, targetY, nextDamage, remainingBounces - 1, visited)
+      return
+    }
+
+    if (
+      this.boss &&
+      !visited.has(this.boss) &&
+      Phaser.Math.Distance.Between(x, y, this.boss.body.x, this.boss.body.y) <= SPLASH_CHAIN_RANGE + 40
+    ) {
+      visited.add(this.boss)
+      const line = this.add.line(0, 0, x, y, this.boss.body.x, this.boss.body.y, 0x38bdf8, 0.82)
+      line.setOrigin(0, 0)
+      line.setDepth(12)
+      this.tweens.add({ targets: line, alpha: 0, duration: 130, onComplete: () => line.destroy() })
+      this.damageBoss(nextDamage)
     }
   }
 
@@ -1555,10 +1910,33 @@ export class ShooterScene extends Phaser.Scene {
   }
 
   private updateWeaponDisplay() {
-    const core = this.bulletCore ? text(this.bulletCore.label, this.settings.language) : '-'
     const modules = this.weaponModules.map((part) => text(part.label, this.settings.language)).join('/')
-    this.weaponText.setText(`ATK ${this.attackPower}  CORE ${core}  MOD ${modules || '-/-'}`)
+    this.weaponText.setText(`ATK ${this.attackPower}  MOD ${modules || '-/-'}`)
     this.weaponText.setColor(this.weaponModules.length === MAX_MODULE_SLOTS && this.bulletCore ? '#bbf7d0' : '#fde68a')
+    this.updateBulletCoreHudIcon()
+  }
+
+  private updateBulletCoreHudIcon() {
+    this.bulletCoreIcon?.destroy()
+    this.bulletCoreIcon = undefined
+
+    const iconKey = this.getPartIconKey(this.bulletCore)
+    const tint = this.bulletCore?.color ?? 0x64748b
+    this.bulletCoreIconGlow.setFillStyle(tint, this.bulletCore ? 0.22 : 0.08)
+    this.bulletCoreIconFrame.setStrokeStyle(2, tint, this.bulletCore ? 0.92 : 0.52)
+
+    if (!iconKey) {
+      this.bulletCoreIconGlow.setVisible(false)
+      this.bulletCoreIconFrame.setVisible(false)
+      return
+    }
+
+    this.bulletCoreIconGlow.setVisible(true)
+    this.bulletCoreIconFrame.setVisible(true)
+    this.bulletCoreIconFrame.setFillStyle(0x020617, 0.72)
+    this.bulletCoreIcon = this.add.image(this.bulletCoreIconFrame.x, this.bulletCoreIconFrame.y, iconKey)
+    this.setImageHeightPreservingAspect(this.bulletCoreIcon, AMMO_ICON_DISPLAY_SIZE)
+    this.bulletCoreIcon.setDepth(35)
   }
 
   private updateStatus(time: number, elapsedMs: number) {
@@ -1812,6 +2190,7 @@ export class ShooterScene extends Phaser.Scene {
   private openPartChoice(part: PartDefinition) {
     this.pendingPart = part
     this.isPartChoiceOpen = true
+    this.partChoiceOpenedAt = this.time.now
     this.player.body.setVelocity(0, 0)
     this.physics.world.pause()
     this.partChoicePanel?.destroy()
@@ -1890,6 +2269,8 @@ export class ShooterScene extends Phaser.Scene {
   }
 
   private closePartChoice(shouldEquipNew: boolean) {
+    this.resumeStageClockAfterPartChoice()
+
     if (shouldEquipNew && this.pendingPart) {
       const replaceIndex = this.pendingPart.kind === 'weapon-module'
         ? 0
@@ -1902,6 +2283,18 @@ export class ShooterScene extends Phaser.Scene {
     this.physics.world.resume()
     this.partChoicePanel?.destroy()
     this.partChoicePanel = undefined
+  }
+
+  private resumeStageClockAfterPartChoice() {
+    if (this.partChoiceOpenedAt <= 0) {
+      return
+    }
+
+    const pausedMs = Math.max(0, this.time.now - this.partChoiceOpenedAt)
+    if (this.stageStartedAt > 0) {
+      this.stageStartedAt += pausedMs
+    }
+    this.partChoiceOpenedAt = 0
   }
 
   private endGame() {
@@ -1995,6 +2388,7 @@ export class ShooterScene extends Phaser.Scene {
   }
 
   private destroyPlayerBullet(bullet: PlayerBullet) {
+    bullet.visual?.destroy()
     bullet.body.destroy()
     bullet.debug?.destroy()
   }
@@ -2051,15 +2445,18 @@ export class ShooterScene extends Phaser.Scene {
     return debug
   }
 
-  private syncDebugRect(debug: Phaser.GameObjects.Rectangle | undefined, body: Phaser.GameObjects.Rectangle) {
+  private syncDebugRect(
+    debug: Phaser.GameObjects.Rectangle | undefined,
+    body: Phaser.GameObjects.Rectangle | Phaser.GameObjects.Image,
+  ) {
     if (!debug) {
       return
     }
 
     debug.x = body.x
     debug.y = body.y
-    debug.width = body.width
-    debug.height = body.height
+    debug.width = body.displayWidth
+    debug.height = body.displayHeight
   }
 
   private syncDebugCircle(debug: Phaser.GameObjects.Ellipse | undefined, body: Phaser.GameObjects.Ellipse) {
