@@ -159,7 +159,7 @@ export interface PartDefinition {
 }
 
 export interface FieldDrop {
-  body: PhysicsRectangle | PhysicsImage
+  body: PhysicsRectangle | PhysicsImage | PhysicsSprite
   glow: Phaser.GameObjects.Ellipse
   kind: DropKind
   coinValue?: number

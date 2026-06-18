@@ -69,8 +69,12 @@ const WING_INTERVAL_MS = 310
 const SPARK_INTERVAL_MS = 540
 const COIN_MAGNET_RADIUS = 138
 const COIN_MAGNET_SPEED = 410
+const COIN_ANIM_KEY = 'coin-spin'
+const COIN_FRAME_KEYS = Array.from({ length: 8 }, (_, index) => `coin-spin-frame-${index}`)
+const COIN_DISPLAY_SIZE = 18
 const DROP_LIFETIME_MS = 20_000
 const DROP_BLINK_MS = 4_000
+const PART_DROP_DISPLAY_HEIGHT = 31
 const PART_DROP_MIN_Y = 116
 const PART_DROP_MAX_Y = GAME_HEIGHT - 76
 const SUPPORT_DRONE_OFFSET_X = 48
@@ -237,6 +241,11 @@ export class ShooterScene extends Phaser.Scene {
   preload() {
     preloadPlayerJet(this)
     preloadParallaxBackground(this)
+    COIN_FRAME_KEYS.forEach((key, index) => {
+      if (!this.textures.exists(key)) {
+        this.load.image(key, `/assets/coin-spin/frame_${index.toString().padStart(3, '0')}.png`)
+      }
+    })
     Object.entries(AMMO_ICON_ASSETS).forEach(([partId, asset]) => {
       const key = this.getAmmoIconKey(partId as BulletCoreId)
       if (!this.textures.exists(key)) {
@@ -247,6 +256,7 @@ export class ShooterScene extends Phaser.Scene {
 
   create() {
     this.resetGameState()
+    this.createCoinDropAnimation()
     this.background = new ParallaxBackground(this)
 
     this.player = createPlayerShip(this, GAME_WIDTH / 2, GAME_HEIGHT - 74, 76) as PhysicsSprite
@@ -529,6 +539,33 @@ export class ShooterScene extends Phaser.Scene {
     return physicsBody
   }
 
+  private enableSpritePhysics(
+    body: Phaser.GameObjects.Sprite,
+    group: Phaser.Physics.Arcade.Group,
+    width: number,
+    height: number,
+  ) {
+    const physicsBody = this.physics.add.existing(body) as PhysicsSprite
+    physicsBody.body.setAllowGravity(false)
+    physicsBody.body.setImmovable(true)
+    physicsBody.body.setSize(width, height, true)
+    group.add(physicsBody)
+    return physicsBody
+  }
+
+  private createCoinDropAnimation() {
+    if (this.anims.exists(COIN_ANIM_KEY)) {
+      return
+    }
+
+    this.anims.create({
+      key: COIN_ANIM_KEY,
+      frames: COIN_FRAME_KEYS.map((key) => ({ key })),
+      frameRate: 12,
+      repeat: -1,
+    })
+  }
+
   private getAmmoIconKey(partId: BulletCoreId) {
     return `ammo-icon-${partId}`
   }
@@ -547,6 +584,12 @@ export class ShooterScene extends Phaser.Scene {
     const sourceHeight = source.height ?? image.height
     const width = sourceHeight > 0 ? height * (sourceWidth / sourceHeight) : height
     image.setDisplaySize(width, height)
+  }
+
+  private setBodySizeToDisplay(body: PhysicsImage | PhysicsSprite) {
+    const sourceWidth = body.displayWidth / Math.max(Math.abs(body.scaleX), 0.0001)
+    const sourceHeight = body.displayHeight / Math.max(Math.abs(body.scaleY), 0.0001)
+    body.body.setSize(Math.round(sourceWidth), Math.round(sourceHeight), true)
   }
 
   private getPhysicsGameObject(object: ArcadeOverlapObject) {
@@ -1005,24 +1048,35 @@ export class ShooterScene extends Phaser.Scene {
   private spawnDrop(x: number, y: number, kind: FieldDrop['kind'], coinValue?: number, part?: PartDefinition) {
     const color = kind === 'coin' ? 0xfacc15 : part?.color ?? 0x38bdf8
     const iconKey = this.getPartIconKey(part)
+    const isCoinDrop = kind === 'coin'
     const isIconDrop = kind === 'part' && iconKey
-    const glow = this.add.ellipse(x, y, isIconDrop ? 46 : kind === 'coin' ? 16 : 20, isIconDrop ? 46 : kind === 'coin' ? 16 : 20, color, 0.18)
+    const glowSize = isCoinDrop ? 20 : isIconDrop ? 34 : 20
+    const glow = this.add.ellipse(x, y, glowSize, glowSize, color, 0.18)
     glow.setDepth(13)
-    const body = isIconDrop
-      ? this.enableImagePhysics(this.add.image(x, y, iconKey), this.powerUpsGroup, 28, 34)
-      : this.enableRectanglePhysics(
-          this.add.rectangle(x, y, kind === 'coin' ? 10 : 13, kind === 'coin' ? 10 : 13, color, 0.95),
-          this.powerUpsGroup,
-          14,
-          14,
-        )
-    body.setDepth(14)
-    if (isIconDrop) {
-      this.setImageHeightPreservingAspect(body as Phaser.GameObjects.Image, 46)
+    let body: FieldDrop['body']
+    if (isCoinDrop) {
+      const coinBody = this.enableSpritePhysics(
+        this.add.sprite(x, y, COIN_FRAME_KEYS[0]),
+        this.powerUpsGroup,
+        COIN_DISPLAY_SIZE,
+        COIN_DISPLAY_SIZE,
+      )
+      coinBody.setDisplaySize(COIN_DISPLAY_SIZE, COIN_DISPLAY_SIZE)
+      this.setBodySizeToDisplay(coinBody)
+      coinBody.play(COIN_ANIM_KEY)
+      body = coinBody
+    } else if (isIconDrop) {
+      body = this.enableImagePhysics(this.add.image(x, y, iconKey), this.powerUpsGroup, 1, 1)
+      this.setImageHeightPreservingAspect(body, PART_DROP_DISPLAY_HEIGHT)
+      this.setBodySizeToDisplay(body)
     } else {
+      body = this.enableRectanglePhysics(this.add.rectangle(x, y, 13, 13, color, 0.95), this.powerUpsGroup, 14, 14)
+    }
+    body.setDepth(14)
+    if (!isIconDrop && !isCoinDrop) {
       const rectangleBody = body as PhysicsRectangle
       body.setAngle(45)
-      rectangleBody.setStrokeStyle(2, kind === 'coin' ? 0xfef08a : 0xe0f2fe, 0.95)
+      rectangleBody.setStrokeStyle(2, 0xe0f2fe, 0.95)
     }
     const driftDirection = Math.random() < 0.5 ? -1 : 1
     if (kind === 'coin') {
@@ -1033,7 +1087,7 @@ export class ShooterScene extends Phaser.Scene {
         Phaser.Math.Between(70, 130) * (Math.random() < 0.5 ? -1 : 1),
       )
     }
-    const debug = this.createDebugRect(body.x, body.y, isIconDrop ? 28 : 14, isIconDrop ? 34 : 14, color)
+    const debug = this.createDebugRect(body.x, body.y, body.body.width, body.body.height, color)
 
     if (isIconDrop) {
       this.tweens.add({
@@ -1045,10 +1099,10 @@ export class ShooterScene extends Phaser.Scene {
         repeat: -1,
         yoyo: true,
       })
+    } else if (!isCoinDrop) {
       this.tweens.add({
-        targets: body,
-        scaleX: body.scaleX * 1.08,
-        scaleY: body.scaleY * 1.08,
+        targets: [body, glow],
+        scale: 1.18,
         duration: 520,
         ease: 'Sine.easeInOut',
         repeat: -1,
@@ -1056,8 +1110,9 @@ export class ShooterScene extends Phaser.Scene {
       })
     } else {
       this.tweens.add({
-        targets: [body, glow],
-        scale: 1.18,
+        targets: glow,
+        scale: 1.16,
+        alpha: 0.32,
         duration: 520,
         ease: 'Sine.easeInOut',
         repeat: -1,
@@ -2447,16 +2502,17 @@ export class ShooterScene extends Phaser.Scene {
 
   private syncDebugRect(
     debug: Phaser.GameObjects.Rectangle | undefined,
-    body: Phaser.GameObjects.Rectangle | Phaser.GameObjects.Image,
+    body: Phaser.GameObjects.Rectangle | Phaser.GameObjects.Image | Phaser.GameObjects.Sprite,
   ) {
     if (!debug) {
       return
     }
 
+    const arcadeBody = (body as { body?: Phaser.Physics.Arcade.Body }).body
     debug.x = body.x
     debug.y = body.y
-    debug.width = body.displayWidth
-    debug.height = body.displayHeight
+    debug.width = arcadeBody?.width ?? body.displayWidth
+    debug.height = arcadeBody?.height ?? body.displayHeight
   }
 
   private syncDebugCircle(debug: Phaser.GameObjects.Ellipse | undefined, body: Phaser.GameObjects.Ellipse) {
