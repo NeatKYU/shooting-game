@@ -191,8 +191,8 @@ export class IntroScene extends Phaser.Scene {
       48,
       text(
         {
-          ko: `방향키/WASD 이동  ${keyLabel(controls.slow, 'ko')} 저속/히트박스\n${keyLabel(controls.fire, 'ko')} 발사  ${keyLabel(controls.bomb, 'ko')} 폭탄\n탄에 가까이 붙으면 그레이즈 보너스`,
-          en: `Arrows/WASD move  ${keyLabel(controls.slow, 'en')} focus/hitbox\n${keyLabel(controls.fire, 'en')} fire  ${keyLabel(controls.bomb, 'en')} bomb\nGraze bullets closely for score`,
+          ko: `방향키/WASD 이동  ${keyLabel(controls.slow, 'ko')} 저속\n${keyLabel(controls.fire, 'ko')} 발사  ${keyLabel(controls.bomb, 'ko')} 폭탄\n탄에 가까이 붙으면 그레이즈 보너스`,
+          en: `Arrows/WASD move  ${keyLabel(controls.slow, 'en')} focus\n${keyLabel(controls.fire, 'en')} fire  ${keyLabel(controls.bomb, 'en')} bomb\nGraze bullets closely for score`,
         },
         this.settings.language,
       ),
@@ -253,14 +253,6 @@ export class IntroScene extends Phaser.Scene {
         label: `${text({ ko: '흔들림', en: 'Shake' }, this.settings.language)}: ${this.settings.screenShake ? 'ON' : 'OFF'}`,
         action: () => {
           this.settings.screenShake = !this.settings.screenShake
-          saveSettings(this.settings)
-          this.renderSettingsPanel()
-        },
-      },
-      {
-        label: `${text({ ko: '히트박스', en: 'Hitbox' }, this.settings.language)}: ${this.settings.showHitbox ? 'ON' : 'FOCUS'}`,
-        action: () => {
-          this.settings.showHitbox = !this.settings.showHitbox
           saveSettings(this.settings)
           this.renderSettingsPanel()
         },

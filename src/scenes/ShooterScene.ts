@@ -132,8 +132,6 @@ export class ShooterScene extends Phaser.Scene {
   private bossNameText!: Phaser.GameObjects.Text
   private weaponText!: Phaser.GameObjects.Text
   private supportDrones: Phaser.GameObjects.Image[] = []
-  private hitboxCore!: Phaser.GameObjects.Ellipse
-  private hitboxRing!: Phaser.GameObjects.Ellipse
   private resultPanel?: Phaser.GameObjects.Container
   private shopPanel?: Phaser.GameObjects.Container
   private partChoicePanel?: Phaser.GameObjects.Container
@@ -204,7 +202,6 @@ export class ShooterScene extends Phaser.Scene {
     this.createInput()
     this.createHud()
     this.createBossUi()
-    this.createHitboxDisplay()
     this.registerPhysicsOverlaps()
 
     this.statusText.setText(
@@ -246,7 +243,6 @@ export class ShooterScene extends Phaser.Scene {
 
     this.updatePlayer()
     this.updateSupportDrones()
-    this.updateHitboxDisplay(time)
 
     if (this.fireKey.isDown && time - this.lastPlayerShot >= PLAYER_FIRE_MS) {
       this.fireBullet()
@@ -425,15 +421,6 @@ export class ShooterScene extends Phaser.Scene {
     this.bossNameText.setVisible(visible)
   }
 
-  private createHitboxDisplay() {
-    this.hitboxRing = this.add.ellipse(this.player.x, this.player.y, PLAYER_GRAZE_RADIUS * 2, PLAYER_GRAZE_RADIUS * 2, 0x67e8f9, 0.04)
-    this.hitboxRing.setStrokeStyle(1, 0x67e8f9, 0.2)
-    this.hitboxRing.setDepth(12)
-    this.hitboxCore = this.add.ellipse(this.player.x, this.player.y, 10, 10, 0xffffff, 0.92)
-    this.hitboxCore.setStrokeStyle(2, 0x38bdf8, 1)
-    this.hitboxCore.setDepth(13)
-  }
-
   private enableRectanglePhysics(
     body: Phaser.GameObjects.Rectangle,
     group: Phaser.Physics.Arcade.Group,
@@ -547,15 +534,6 @@ export class ShooterScene extends Phaser.Scene {
       (this.player.x <= 28 && vx < 0) || (this.player.x >= GAME_WIDTH - 28 && vx > 0) ? 0 : vx,
       (this.player.y <= 128 && vy < 0) || (this.player.y >= GAME_HEIGHT - 30 && vy > 0) ? 0 : vy,
     )
-  }
-
-  private updateHitboxDisplay(time: number) {
-    const shouldShow = this.settings.showHitbox || this.slowKey.isDown || time < this.invulnerableUntil
-    this.hitboxRing.setPosition(this.player.x, this.player.y)
-    this.hitboxCore.setPosition(this.player.x, this.player.y)
-    this.hitboxRing.setVisible(shouldShow)
-    this.hitboxCore.setVisible(shouldShow)
-    this.hitboxRing.setAlpha(this.slowKey.isDown ? 0.2 : 0.08)
   }
 
   private fireBullet() {

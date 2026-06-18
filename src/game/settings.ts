@@ -12,7 +12,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
   },
   soundVolume: 0.55,
   screenShake: true,
-  showHitbox: true,
+  showHitbox: false,
 }
 
 export function cloneSettings(settings: GameSettings): GameSettings {
@@ -40,7 +40,7 @@ export function loadSettings(): GameSettings {
       },
       soundVolume: typeof parsed.soundVolume === 'number' ? Phaser.Math.Clamp(parsed.soundVolume, 0, 1) : 0.55,
       screenShake: parsed.screenShake !== false,
-      showHitbox: parsed.showHitbox !== false,
+      showHitbox: false,
     }
   } catch {
     return cloneSettings(DEFAULT_SETTINGS)

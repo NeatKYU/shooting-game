@@ -31,6 +31,6 @@ export const BG_NEAR_SCROLL = 280
 export const BG_MID_ALPHA = 0.34
 export const UI_FONT = 'system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif'
 export const MONO_FONT = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace'
-export const DEBUG_HITBOXES = import.meta.env.DEV
+export const DEBUG_HITBOXES = false
 export const SETTINGS_STORAGE_KEY = 'space-shooter-demo-settings-v1'
 export const BEST_SCORE_PREFIX = 'space-shooter-demo-best-v1'
