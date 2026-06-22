@@ -31,12 +31,22 @@ function ambushWave(
   }))
 }
 
+function doubleEnemySpawns(events: StageEnemyEvent[]): StageEnemyEvent[] {
+  return events.flatMap((event) => [
+    event,
+    {
+      ...event,
+      timeMs: event.timeMs + 160,
+    },
+  ])
+}
+
 export const DEMO_STAGE: StageDefinition = {
   id: 'demo-stage-1',
   title: { ko: 'STAGE 1: 유성 전선', en: 'STAGE 1: Meteor Front' },
   subtitle: { ko: '패턴을 외우고 근접 회피로 배율을 올리세요', en: 'Learn patterns, graze close, build score' },
   starCount: 112,
-  bossAppearMs: 92_000,
+  bossAppearMs: 60_000,
   boss: {
     name: { ko: 'BOSS: 노바 캐리어', en: 'BOSS: Nova Carrier' },
     maxHp: 230,
@@ -45,7 +55,7 @@ export const DEMO_STAGE: StageDefinition = {
     phaseTwoFill: 0xe11d48,
   },
   score: SCORE_MODEL,
-  events: [
+  events: doubleEnemySpawns([
     ...lineWave(800, [96, 144, 192, 240, 288, 336, 384], 'formation', 'scout'),
     ...lineWave(4_800, [56, 104, 152, 200], 'diagonal-right', 'wing'),
     ...lineWave(4_800, [424, 376, 328, 280], 'diagonal-left', 'wing'),
@@ -67,5 +77,5 @@ export const DEMO_STAGE: StageDefinition = {
     ...lineWave(83_000, [72, 120, 168, 216, 264, 312, 360, 408], 'formation', 'wing'),
     ...lineWave(87_000, [72, 144, 216], 'diagonal-right', 'elite'),
     ...lineWave(87_000, [408, 336, 264], 'diagonal-left', 'elite'),
-  ].sort((a, b) => a.timeMs - b.timeMs),
+  ]).sort((a, b) => a.timeMs - b.timeMs),
 }

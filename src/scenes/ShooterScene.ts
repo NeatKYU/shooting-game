@@ -4,7 +4,10 @@ import { ENEMY_ARCHETYPES } from '../data/enemies'
 import { DEMO_STAGE } from '../data/demoStage'
 import { playTone } from '../game/audio'
 import {
+  BOSS_MOVEMENT_SPEED_MULTIPLIER,
   DEBUG_HITBOXES,
+  ENEMY_MOVEMENT_SPEED_MULTIPLIER,
+  ENEMY_PROJECTILE_SPEED_MULTIPLIER,
   GAME_HEIGHT,
   GAME_WIDTH,
   MAX_BOMBS,
@@ -1493,10 +1496,11 @@ export class ShooterScene extends Phaser.Scene {
   }
 
   private positionEnemy(enemy: Enemy, ageMs: number, dt: number) {
-    const ageSeconds = ageMs / 1000
+    const movementAgeMs = ageMs * ENEMY_MOVEMENT_SPEED_MULTIPLIER
+    const ageSeconds = movementAgeMs / 1000
 
     if (enemy.movement === 'formation') {
-      enemy.body.x = enemy.startX + Math.sin(ageMs / 620) * 6
+      enemy.body.x = enemy.startX + Math.sin(movementAgeMs / 620) * 6
       enemy.body.y = -28 + ageSeconds * 118
       return
     }
@@ -1509,25 +1513,25 @@ export class ShooterScene extends Phaser.Scene {
     }
 
     if (enemy.movement === 'sine') {
-      enemy.body.x = enemy.startX + Math.sin(ageMs / 330) * 44
+      enemy.body.x = enemy.startX + Math.sin(movementAgeMs / 330) * 44
       enemy.body.y = -28 + ageSeconds * 124
       return
     }
 
     if (enemy.movement === 'hover') {
-      if (ageMs < 1_000) {
+      if (movementAgeMs < 1_000) {
         enemy.body.x = enemy.startX
-        enemy.body.y = Phaser.Math.Linear(-28, enemy.targetY, ageMs / 1_000)
+        enemy.body.y = Phaser.Math.Linear(-28, enemy.targetY, movementAgeMs / 1_000)
         return
       }
 
-      if (ageMs < 3_200) {
-        enemy.body.x = enemy.startX + Math.sin(ageMs / 420) * 18
-        enemy.body.y = enemy.targetY + Math.sin(ageMs / 330) * 4
+      if (movementAgeMs < 3_200) {
+        enemy.body.x = enemy.startX + Math.sin(movementAgeMs / 420) * 18
+        enemy.body.y = enemy.targetY + Math.sin(movementAgeMs / 330) * 4
         return
       }
 
-      enemy.body.y = enemy.targetY + ((ageMs - 3_200) / 1000) * 118
+      enemy.body.y = enemy.targetY + ((movementAgeMs - 3_200) / 1000) * 118
       return
     }
 
@@ -1539,19 +1543,19 @@ export class ShooterScene extends Phaser.Scene {
     }
 
     const direction = enemy.movement === 'ambush-right' ? 1 : -1
-    if (ageMs < 900) {
+    if (movementAgeMs < 900) {
       enemy.body.x = enemy.startX
-      enemy.body.y = Phaser.Math.Linear(-28, enemy.targetY, ageMs / 900)
+      enemy.body.y = Phaser.Math.Linear(-28, enemy.targetY, movementAgeMs / 900)
       return
     }
 
-    if (ageMs < 2_800) {
-      enemy.body.x = enemy.startX + Math.sin(ageMs / 260) * 9
-      enemy.body.y = enemy.targetY + Math.sin(ageMs / 330) * 4
+    if (movementAgeMs < 2_800) {
+      enemy.body.x = enemy.startX + Math.sin(movementAgeMs / 260) * 9
+      enemy.body.y = enemy.targetY + Math.sin(movementAgeMs / 330) * 4
       return
     }
 
-    const exitProgress = (ageMs - 2_800) / 1_600
+    const exitProgress = (movementAgeMs - 2_800) / 1_600
     enemy.body.x = enemy.startX + direction * exitProgress * 270
     enemy.body.y = enemy.targetY - exitProgress * 90
     void dt
@@ -1603,14 +1607,17 @@ export class ShooterScene extends Phaser.Scene {
       playTone(this.settings, 180, 260, 'sawtooth', 0.24)
     }
 
-    const driftX = Math.sin(ageMs / (boss.phase === 1 ? 1_200 : 820)) * (boss.phase === 1 ? 120 : 142)
+    const bossMovementAgeMs = ageMs * BOSS_MOVEMENT_SPEED_MULTIPLIER
+    const driftX =
+      Math.sin(bossMovementAgeMs / (boss.phase === 1 ? 1_200 : 820)) * (boss.phase === 1 ? 120 : 142)
     boss.body.x = GAME_WIDTH / 2 + driftX
-    boss.body.y = 90 + Math.sin(ageMs / 1_700) * 8
+    boss.body.y = 90 + Math.sin(bossMovementAgeMs / 1_700) * 8
     boss.core.x = boss.body.x
     boss.core.y = boss.body.y + 4
     this.syncDebugRect(boss.debug, boss.body)
 
-    const bossSpeed = this.difficulty.bossBulletSpeed * this.getRunBulletSpeedScale()
+    const bossSpeed =
+      this.difficulty.bossBulletSpeed * this.getRunBulletSpeedScale() * ENEMY_PROJECTILE_SPEED_MULTIPLIER
     if (ageMs - boss.lastRingMs >= (boss.phase === 1 ? 1_650 : 1_180)) {
       this.fireRing(boss.body.x, boss.body.y + 40, boss.phase === 1 ? 18 : 22, 142 * bossSpeed, ageMs / 900, 0xc4b5fd, 5, 2)
       boss.lastRingMs = ageMs
@@ -1654,7 +1661,11 @@ export class ShooterScene extends Phaser.Scene {
   }
 
   private fireBulletPattern(x: number, y: number, pattern: BulletPattern, ageMs: number) {
-    const speed = pattern.speed * this.difficulty.enemyBulletSpeed * this.getRunBulletSpeedScale()
+    const speed =
+      pattern.speed *
+      this.difficulty.enemyBulletSpeed *
+      this.getRunBulletSpeedScale() *
+      ENEMY_PROJECTILE_SPEED_MULTIPLIER
     const count = pattern.count ?? 1
     const spread = pattern.spread ?? 0
     const centerAngle = pattern.centerAngle ?? Math.PI / 2
@@ -1688,7 +1699,8 @@ export class ShooterScene extends Phaser.Scene {
           return
         }
 
-        this.fireFan(x, y, centerAngle, count, spread + index * 0.08, speed + index * 16, pattern.color, pattern.radius)
+        const burstSpeed = speed + index * 16 * ENEMY_PROJECTILE_SPEED_MULTIPLIER
+        this.fireFan(x, y, centerAngle, count, spread + index * 0.08, burstSpeed, pattern.color, pattern.radius)
       })
     }
   }
