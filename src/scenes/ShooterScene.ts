@@ -89,6 +89,11 @@ const BASIC_BULLET_DISPLAY_HEIGHT = 29
 const FLAME_BULLET_RANGE = 245
 const FLAME_BULLET_SPEED = 430
 const SPLASH_CHAIN_RANGE = 165
+const BOSS_PHASE_ONE_PATTERN_SEQUENCE = [1, 1, 2, 2, 3, 3] as const
+const BOSS_PHASE_TWO_PATTERN_SEQUENCE = [1, 2, 3] as const
+const BOSS_PHASE_ONE_PATTERN_INTERVAL_MS = 1_050
+const BOSS_PHASE_TWO_PATTERN_INTERVAL_MS = 640
+const BOSS_PHASE_START_DELAY_MS = 650
 
 const AMMO_ICON_ASSETS = {
   'armor-piercer': '/assets/ammo-armor-piercer.png',
@@ -104,6 +109,8 @@ interface ActiveLaser {
   expiresAt: number
   nextDamageAt: number
 }
+
+type BossPatternId = (typeof BOSS_PHASE_ONE_PATTERN_SEQUENCE | typeof BOSS_PHASE_TWO_PATTERN_SEQUENCE)[number]
 
 interface PanelSelectableItem {
   plate: Phaser.GameObjects.Rectangle
@@ -1339,10 +1346,8 @@ export class ShooterScene extends Phaser.Scene {
       maxHp,
       phase: 1,
       spawnElapsedMs: elapsedMs,
-      lastRingMs: -1_600,
-      lastFanMs: -1_000,
-      lastAimedMs: -600,
-      lastSpiralMs: -900,
+      patternStep: 0,
+      nextPatternAtMs: BOSS_PHASE_START_DELAY_MS,
     }
 
     this.setBossUiVisible(true)
@@ -1597,6 +1602,8 @@ export class ShooterScene extends Phaser.Scene {
       boss.body.setFillStyle(this.stage.boss.phaseTwoFill, 0.96)
       boss.body.setStrokeStyle(3, 0xfda4af)
       boss.core.setFillStyle(0xfef08a, 0.98)
+      boss.patternStep = 0
+      boss.nextPatternAtMs = ageMs + BOSS_PHASE_START_DELAY_MS
       this.enemyBullets.forEach((bullet) => this.destroyEnemyBullet(bullet))
       this.enemyBullets = []
       this.statusMessageUntil = this.time.now + 1_200
@@ -1618,46 +1625,53 @@ export class ShooterScene extends Phaser.Scene {
 
     const bossSpeed =
       this.difficulty.bossBulletSpeed * this.getRunBulletSpeedScale() * ENEMY_PROJECTILE_SPEED_MULTIPLIER
-    if (ageMs - boss.lastRingMs >= (boss.phase === 1 ? 1_650 : 1_180)) {
-      this.fireRing(boss.body.x, boss.body.y + 40, boss.phase === 1 ? 18 : 22, 142 * bossSpeed, ageMs / 900, 0xc4b5fd, 5, 2)
-      boss.lastRingMs = ageMs
+    this.updateBossPatternSequence(boss, ageMs, bossSpeed)
+  }
+
+  private updateBossPatternSequence(boss: Boss, ageMs: number, bossSpeed: number) {
+    if (ageMs < boss.nextPatternAtMs) {
+      return
     }
 
-    if (ageMs - boss.lastFanMs >= (boss.phase === 1 ? 1_050 : 780)) {
+    const sequence = boss.phase === 1 ? BOSS_PHASE_ONE_PATTERN_SEQUENCE : BOSS_PHASE_TWO_PATTERN_SEQUENCE
+    const pattern = sequence[boss.patternStep % sequence.length]
+    this.fireBossPattern(boss, pattern, ageMs, bossSpeed)
+    boss.patternStep += 1
+    boss.nextPatternAtMs = ageMs + (boss.phase === 1 ? BOSS_PHASE_ONE_PATTERN_INTERVAL_MS : BOSS_PHASE_TWO_PATTERN_INTERVAL_MS)
+  }
+
+  private fireBossPattern(boss: Boss, pattern: BossPatternId, ageMs: number, bossSpeed: number) {
+    if (pattern === 1) {
+      this.fireRing(
+        boss.body.x,
+        boss.body.y + 40,
+        boss.phase === 1 ? 18 : 22,
+        (boss.phase === 1 ? 142 : 162) * bossSpeed,
+        ageMs / (boss.phase === 1 ? 900 : 620),
+        0xc4b5fd,
+        5,
+        2,
+      )
+      return
+    }
+
+    if (pattern === 2) {
       this.fireFan(
         boss.body.x,
         boss.body.y + 44,
         Math.PI / 2,
         boss.phase === 1 ? 7 : 9,
         boss.phase === 1 ? 0.64 : 0.78,
-        210 * bossSpeed,
+        (boss.phase === 1 ? 210 : 230) * bossSpeed,
         boss.phase === 1 ? 0xfca5a5 : 0xf9a8d4,
         5,
         2,
       )
-      boss.lastFanMs = ageMs
+      return
     }
 
-    if (ageMs - boss.lastAimedMs >= (boss.phase === 1 ? 720 : 540)) {
-      this.fireAimedBullet(boss.body.x - 32, boss.body.y + 36, 235 * bossSpeed, 0x67e8f9, 4, 2)
-      this.fireAimedBullet(boss.body.x + 32, boss.body.y + 36, 235 * bossSpeed, 0x67e8f9, 4, 2)
-      boss.lastAimedMs = ageMs
-    }
-
-    if (boss.phase === 2 && ageMs - boss.lastSpiralMs >= 420) {
-      const rotation = ageMs / 240
-      this.fireEnemyBullet(boss.body.x, boss.body.y + 42, Math.cos(rotation) * 188 * bossSpeed, Math.sin(rotation) * 188 * bossSpeed, 0xfef08a, 5, 2)
-      this.fireEnemyBullet(
-        boss.body.x,
-        boss.body.y + 42,
-        Math.cos(rotation + Math.PI) * 188 * bossSpeed,
-        Math.sin(rotation + Math.PI) * 188 * bossSpeed,
-        0xfef08a,
-        5,
-        2,
-      )
-      boss.lastSpiralMs = ageMs
-    }
+    this.fireAimedBullet(boss.body.x - 34, boss.body.y + 36, (boss.phase === 1 ? 235 : 258) * bossSpeed, 0x67e8f9, 4, 2)
+    this.fireAimedBullet(boss.body.x + 34, boss.body.y + 36, (boss.phase === 1 ? 235 : 258) * bossSpeed, 0x67e8f9, 4, 2)
   }
 
   private fireBulletPattern(x: number, y: number, pattern: BulletPattern, ageMs: number) {

@@ -198,10 +198,8 @@ export interface Boss {
   maxHp: number
   phase: 1 | 2
   spawnElapsedMs: number
-  lastRingMs: number
-  lastFanMs: number
-  lastAimedMs: number
-  lastSpiralMs: number
+  patternStep: number
+  nextPatternAtMs: number
 }
 
 export interface ShooterSceneData {
